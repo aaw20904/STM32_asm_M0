@@ -35,4 +35,9 @@
 ;0->MSP (main SP), 1->PSP (process SP)
 ;-----C o r t e x --M0--s t a c k-----f r a m e
 ;[R0|R1|R2|R3|R12|LR|PC|xPSR]
+;---P R O C E D U R E S--
+;When a procedure calle from main program, the return address 
+; stores into the link register (LR).When a procedure called from 
+; an another procedure, return address stored in the stack.
+;-----I N T E R R U P T S-------
 

@@ -16,6 +16,10 @@
 ;thread(applications)->main or process stack
 ;Bit 1 in CONTROL defines: 0 -> SP is a prosess stack pointer, 
 ;                          1 -> main stack pointer
+;--PUSH/POP----------
+;there must be at least two registers in a list, for example:
+PUSH {R0,R2}
+POP {R2,R0}
 ;-P R O C E S S O R---R E G I S T E R S--------
 ;R0-R12 (general purpose)
 ; SP(R13)-stack pointer, LR(R14) - link register,  PC(R15)-prog.counter

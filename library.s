@@ -4,7 +4,7 @@
 
   EXPORT gpio_init
 gpio_init   PROC
-    LDR R0, =0x00000015   ; enable alternate, GPIOC and GPIOA clock (Bit 4 of RCC_APB2ENR)
+    LDR R0, =(1)|(1<<2)|(1<<3)|(1<<4)   ; enable alternate, GPIOC  GPIOA GPIOB
     LDR R1, =RCC_APB2ENR  ; Load the address of RCC_APB2ENR
     STR R0, [R1]          ; Store the value into RCC_APB2ENR
     BX LR                 ; Return from subroutine
@@ -37,9 +37,9 @@ tim3SimpleModeInitInt  PROC
 	LDR R0, =TIM3_DIER
 	LDR R1, =0x01 ;UIE flag
 	STR R1, [R0]  ;set reg
-	LDR R0, =0xE000E100      ; NVIC_ISER0 address
+	LDR R0, =NVIC_ISER0
 	LDR R1, [R0] ; load current content
-	ORR R1, R1, #(1 << 2)    ; Enable TIM3 interrupt (position 28 in ISER0)
+	ORR R1, R1, #(1 << 29)    ; Enable TIM3 interrupt (position 28 in ISER0)
 	STR R1, [R0]  ;save NVIC_ISER0
 	;--load prescaler and counter from stack
 	POP {R2,R1} ;R3 - is a 'ballast' in this case, because M0 can`t push/pop only one reg
@@ -250,7 +250,7 @@ uart_init_tx PROC
      STR R4, [R0]	 
 u_tx_l1
 	 ;--NVIC set
-	 LDR R0, =0xE000E104  ;NVIC_ISER1
+	 LDR R0, =NVIC_ISER1
 	 LDR R1, [R0] ;load current
 	 LDR R2, =(1<<6)  ;bit6 
 	 ORR R1, R1, R2  ;apply new
@@ -329,7 +329,7 @@ uart_init_rx PROC
      STR R4, [R0] ;store valuse to reg	 
 u_rx_l1
 	 ;--NVIC set
-	 LDR R0, =0xE000E104  ;NVIC_ISER1
+	 LDR R0, =NVIC_ISER1
 	 LDR R1, [R0] ;load current
 	 LDR R2, =(1<<6)  ;bit6 
 	 ORR R1, R1, R2  ;apply new
@@ -345,72 +345,7 @@ u_rx_l1
 	BX LR
 	LTORG
 	ENDP
-;====initializing  DMA1 CH7 by attch to UART2 TX======
-;--par3@[pointerToDmaBuffer]   
-;--par4@[null(4)|DMA_TC_interrupt(4)|priority_channel(8)|buffer_size(16)]
-;-----------------
-   EXPORT dma1_attach_uart2_tx
-dma1_attach_uart2_tx  PROC
- ;	enable clock DMA (ch.7 , usart2_tx)
-	 LDR R0, =RCC_AHBENR
-	 LDR R1, [R0]
-	 LDR R2, =0x00000001
-	 ORR R1, R2
-	 STR R1, [R0]
-	  ;--enable--DMA--in--USART2-TX
-	 LDR R0, =USART2_CR3
-	 LDR R1, =(1<<7) ;bit7-DMAT , bit6-DMAR
-	 STR R1, [R0] 
-	 ;-1)Set the peripheral register address
-	 LDR R0, =DMA1_CPAR7
-	 LDR R1, =USART2_DR
-	 STR R1,[R0]
-	 ;--2)assign buffer address
-	 LDR R1, [SP]
-	 LDR R0, =DMA1_CMAR7
-	 STR R1, [R0]
-	 ;--3) buffer size
-	 ;NOTE: after each USART event, this value be decremented
-	 ;and must be restored manually before next transaction
-	 LDR R1, [SP,#0x4]
-	 LDR R0, =0x0000FFFF
-	 AND R1, R0
-	 LDR R0,=DMA1_CNDTR7
-	 STR R1,[R0]
-	 ;--4)priority of channel
-	 LDR R1, [SP,#0x4]
-	 LDR R0,=0x00030000;
-	 AND R1,R0
-	 LSR R1, #0x4
-	 LDR R0, =DMA1_CCR7
-	 STR R1,[R0]
-	 ;--5)Configure data transfer direction, circular mode,
-	 ;peripheral & memory incremented 
-	 ;mode, peripheral & memory data size,
-	 LDR R4, [R0]
-	 LDR R1, =(1<<7)|(1<<4) ; memory increment, mem-to-peripherial
-	 ORR R4, R1
-	 ;transmission complete interrupt enable/disable
-	 LDR R1, [SP,#0x4]
-	 LDR R2,=0x0F000000;
-	 ANDS R1,R2
-	 BEQ u2_dma_no_tc1
-	 LDR R1,=(1<<1) ;TCIE
-	 ORR R4,R1
-u2_dma_no_tc1
-     STR R4,[R0]
-	  ;--NVIC set
-	 LDR R0, =0xE000E104  ;NVIC_ISER1
-	 LDR R1, [R0] ;load current
-	 LDR R2, =(1<<6)  ; (dma1 ch7)(1<<6)|
-	 ORR R1, R1, R2  ;apply new
-	 STR R1, [R0]  ;load new
-	 ;restore SP
-	 ADD SP,SP,#0x8
-	 BX LR
-	 LTORG
-	 ENDP
-   
+
 
 
 ;=======FUNCTION uart_init_duplex with Interrupt
@@ -484,9 +419,9 @@ u_rxtx_l2
      LDR R0, =USART2_CR1
      STR R4, [R0] ;store valuse to reg	
 	 ;--NVIC set
-	 LDR R0, =0xE000E104  ;NVIC_ISER1
+	 LDR R0, =NVIC_ISER1
 	 LDR R1, [R0] ;load current
-	 LDR R2, =(1<<6)  ;bit6 
+	 LDR R2, =(1<<6)  ;bit6 USART2 interrupt enable 
 	 ORR R1, R1, R2  ;apply new
 	 STR R1, [R0]  ;load new
 	 ;--enable receiver and transmitter
@@ -502,7 +437,7 @@ u_rxtx_l2
 	ENDP
 ;=======USART2_TRANSMITTER_DRIVEN_DMA==============
 ;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)]  
-;--par2@[-|-|-|interrupts_enable]
+;--par2@[-|-|-|-]
 ;--par3@[pointerToDmaBuffer]   
 ;--par4@[null(4)|DMA_TC_interrupt(4)|priority_channel(8)|buffer_size(16)]
 ;WordLength: WHEN 1 -> 1 Start bit, 9 Data bits, n Stop bit
@@ -511,7 +446,7 @@ u_rxtx_l2
 ;interrupts_enable: 0xFFFF -> enable TXE TC interrupts, 0->interrupts disable
 ;***************************************************************
 ;NOTES: 1) After a full DMA transaction content of the DMA1_CNDTR7 reister reaches zero
-;It MUST be restored before start the next DMA transaction
+;It MUST be restored (disable channel->restore CNDTR->enable_channel(start)) before start the next DMA transaction
 ;     2)To start DMA TX transaction - set bit 0 in DAM_CCR7 channel    
   EXPORT uart_init_tx_dma 
 uart_init_tx_dma PROC
@@ -546,32 +481,26 @@ uart_init_tx_dma PROC
 	 LDR R0, =USART2_CR2
 	 STR R1, [R0] ;store
 	 ;--Interrupts ;TXE, TC interrupt enable
+	 ;to correct run DMA engine
+	 ;NVIC interrupt for USART2 should be  off
 	 LDR R1, =(1<<6)|(1<<7)  
 	 LDR R0, =USART2_CR1
-	 ;enable/disable intrrupts
-	 LDR R3, [SP,#0x4];
-	 ANDS R3, R1
-	 BEQ u_tx_l2
 	 ORR R4,R4,R1 ;apply new
      STR R4, [R0]	 
 	 ;--enable DMA TX
 	 LDR R0, =USART2_CR3
 	 LDR R1, =(1<<7) ;bit7-DMAT , bit6-DMAR
 	 STR R1, [R0]  
-u_tx_l2
-	 ;--NVIC set
-	 LDR R0, =0xE000E104  ;NVIC_ISER1
-	 LDR R1, [R0] ;load current
-	 LDR R2, =(1<<7)  ;bit6 (uart2) bit7 (dma1 ch7)(1<<6)|
-	 ORR R1, R1, R2  ;apply new
-	 STR R1, [R0]  ;load new
+	 ;--NVIC stay off
+	 
 	 ;--enable transmitter
 	 LDR R0, =USART2_CR1
 	 LDR R1, [R0]
 	 LDR R2, =(1<<13)|(1<<3)  ;UE, TE
 	 ORR R1, R1, R2
 	 STR R1, [R0]
-	 ;---DMA1-CH7---init---
+	 ;*****************
+	 ;---D M A 1-C H 7---init---
 	 ;---enable-clock-DMA-(ch.7 , usart2_tx)
 	 LDR R0, =RCC_AHBENR
 	 LDR R1, [R0]
@@ -615,8 +544,11 @@ u_tx_l2
 	 LDR R1,=(1<<1) ;TCIE
 	 ORR R4,R1
 u2_dma_no_tc
-     STR R4,[R0]
-	 ;7777777777777777777777
+     STR R4,[R0]  ; send to the DMA1_CCR7 reg
+	 ;enable interrupts for DMA1 CH7 in NVIC
+	  LDR R0, =NVIC_ISER0
+	  LDR R1, =(1<<17)  ; DMA1 Channel 7 interrupt, bit 17 of ISER0
+	  STR R1, [R0]
 	 ;;;dma end
 	 ;free memory
 	 ADD SP,SP,#16

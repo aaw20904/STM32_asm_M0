@@ -345,7 +345,74 @@ u_rx_l1
 	BX LR
 	LTORG
 	ENDP
-		
+;====initializing  DMA1 CH7 by attch to UART2 TX======
+;--par3@[pointerToDmaBuffer]   
+;--par4@[null(4)|DMA_TC_interrupt(4)|priority_channel(8)|buffer_size(16)]
+;-----------------
+   EXPORT dma1_attach_uart2_tx
+dma1_attach_uart2_tx  PROC
+ ;	enable clock DMA (ch.7 , usart2_tx)
+	 LDR R0, =RCC_AHBENR
+	 LDR R1, [R0]
+	 LDR R2, =0x00000001
+	 ORR R1, R2
+	 STR R1, [R0]
+	  ;--enable--DMA--in--USART2-TX
+	 LDR R0, =USART2_CR3
+	 LDR R1, =(1<<7) ;bit7-DMAT , bit6-DMAR
+	 STR R1, [R0] 
+	 ;-1)Set the peripheral register address
+	 LDR R0, =DMA1_CPAR7
+	 LDR R1, =USART2_DR
+	 STR R1,[R0]
+	 ;--2)assign buffer address
+	 LDR R1, [SP]
+	 LDR R0, =DMA1_CMAR7
+	 STR R1, [R0]
+	 ;--3) buffer size
+	 ;NOTE: after each USART event, this value be decremented
+	 ;and must be restored manually before next transaction
+	 LDR R1, [SP,#0x4]
+	 LDR R0, =0x0000FFFF
+	 AND R1, R0
+	 LDR R0,=DMA1_CNDTR7
+	 STR R1,[R0]
+	 ;--4)priority of channel
+	 LDR R1, [SP,#0x4]
+	 LDR R0,=0x00030000;
+	 AND R1,R0
+	 LSR R1, #0x4
+	 LDR R0, =DMA1_CCR7
+	 STR R1,[R0]
+	 ;--5)Configure data transfer direction, circular mode,
+	 ;peripheral & memory incremented 
+	 ;mode, peripheral & memory data size,
+	 LDR R4, [R0]
+	 LDR R1, =(1<<7)|(1<<4) ; memory increment, mem-to-peripherial
+	 ORR R4, R1
+	 ;transmission complete interrupt enable/disable
+	 LDR R1, [SP,#0x4]
+	 LDR R2,=0x0F000000;
+	 ANDS R1,R2
+	 BEQ u2_dma_no_tc1
+	 LDR R1,=(1<<1) ;TCIE
+	 ORR R4,R1
+u2_dma_no_tc1
+     STR R4,[R0]
+	  ;--NVIC set
+	 LDR R0, =0xE000E104  ;NVIC_ISER1
+	 LDR R1, [R0] ;load current
+	 LDR R2, =(1<<6)  ; (dma1 ch7)(1<<6)|
+	 ORR R1, R1, R2  ;apply new
+	 STR R1, [R0]  ;load new
+	 ;restore SP
+	 ADD SP,SP,#0x8
+	 BX LR
+	 LTORG
+	 ENDP
+   
+
+
 ;=======FUNCTION uart_init_duplex with Interrupt
 ;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)]  par2@[interrupt_tx_enable(8)|interrupt_rx_enable(8)|parity_type(8)|prity_en(8)]
 ;WordLength: WHEN 1 -> 1 Start bit, 9 Data bits, n Stop bit
@@ -487,6 +554,10 @@ uart_init_tx_dma PROC
 	 BEQ u_tx_l2
 	 ORR R4,R4,R1 ;apply new
      STR R4, [R0]	 
+	 ;--enable DMA TX
+	 LDR R0, =USART2_CR3
+	 LDR R1, =(1<<7) ;bit7-DMAT , bit6-DMAR
+	 STR R1, [R0]  
 u_tx_l2
 	 ;--NVIC set
 	 LDR R0, =0xE000E104  ;NVIC_ISER1
@@ -500,8 +571,8 @@ u_tx_l2
 	 LDR R2, =(1<<13)|(1<<3)  ;UE, TE
 	 ORR R1, R1, R2
 	 STR R1, [R0]
-	 ;;;dma---
-	  ;	enable clock DMA (ch.7 , usart2_tx)
+	 ;---DMA1-CH7---init---
+	 ;---enable-clock-DMA-(ch.7 , usart2_tx)
 	 LDR R0, =RCC_AHBENR
 	 LDR R1, [R0]
 	 LDR R2, =0x00000001

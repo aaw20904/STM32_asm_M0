@@ -44,4 +44,16 @@ POP {R2,R0}
 ; stores into the link register (LR).When a procedure called from 
 ; an another procedure, return address stored in the stack.
 ;-----I N T E R R U P T S-------
+;To enable Interrupts - you should set bits in
+; NVIC , for example in NVIC_ISER1, NVIC_ISER0 registers,
+;in according to the interrupt position  in the vector table.
+;For example : DMA1 Ch7 has position 17, so ,you need  set bit 17 in
+;the ISER0.
+;------------D M A------
+;To enable interrupt transactions, you should:
+;1)enable interrupts in the peripheral but disable it in the NVIC
+;It needs to correctly interact peripherial with the DMA controller.
+;2)enable DMA for concrete peripheral (set respective bits in a peripheral
+; that will work with DMA)
+;3)Initialize DMA channel (memory, peripheral address, e.t.c)
 

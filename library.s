@@ -2,6 +2,97 @@
 	THUMB
     AREA    MyLib, CODE, READONLY
 
+  EXPORT nvicEnableIRQ
+nvicEnableIRQ  PROC
+  ;params:
+  ;one@[-|-|priority|IRQ_Number]
+  ;stack_frame
+  ; 1B  18 17  14 13       10  F     C B     8 7     4 3    0
+  ; [par_1|offset|bitPosition|quotient|product|var2|var1]  
+  SUB SP, SP, #24 ;  4*6= 24bytes allocate memory from stack
+nvicEI_par1 EQU 0x18
+nvicEI_offset EQU 0x14
+nvicEI_bitPosition EQU 0x10
+nvicEI_quotient EQU 0xC
+nvicEI_product EQU 0x08
+nvicEI_remainder EQU 0x04
+nvicEI_var1 EQU 0x00	  
+  ;A) offset address
+   LDR R1, [SP,#nvicEI_par1]
+   AND R1, R1, #0x000000FF ;extract IRQ number
+   LSR R1, R1, #0x5  ; x = x / 32
+   LSL R1 , R1 , #0x2 ; additional address fo r offset x = x * 4
+   STR R1, [SP,#nvicEI_offset] 
+   ;B)Bit position
+   LDR R1, [SP,#nvicEI_par1]
+   AND R1, R1, #0x000000FF ;extract IRQ number
+   LSR R2, R1, #0x5
+   STR R2, [SP,#nvicEI_quotient] ;store quotient
+   LSL R2, #0x5  ; x = x* 32
+   STR R2, [SP, #nvicEI_product] ; store product
+   LDR R1, [SP,#nvicEI_par1]
+   AND R1, #0x000000FF
+   SUB R1, R1, R2
+   STR R1, [SP,nvicEI_bitPosition]
+   ;load base register  address
+   LDR R0, =NVIC_ISER0
+   ;add offset
+   LDR R1, [SP,#nvicEI_offset]
+   ADD R0, R1
+   ;load bit position
+   LDR R2, [SP,#nvicEI_bitPosition]
+   LDR R3, =0x01
+   LSL R3, R2  ;shift 1 left on specifified position
+   ;update intrrrupt enable reg
+   LDR R2, [R0]
+   ORR R2, R3  ;apply bit
+   STR R2, [R0]
+   ;Part 2. Priority level set
+	  ;A) offset address
+	   LDR R1, [SP,#nvicEI_par1]
+	   AND R1, R1, #0x000000FF ;extract IRQ priority
+	   ;LSR R1, R1, #0x8 ;normalize
+	   LSR R1, R1, #0x2  ; x = x / 4
+	   LSL R1 , R1 , #0x2 ; additional address fo r offset x = x * 4
+	   STR R1, [SP,#nvicEI_offset] 
+	   ;B)Bit field position
+	   LDR R1, [SP,#nvicEI_par1]
+	   AND R1, R1, #0x000000ff;extract IRQ number
+	   ;LSR R1, #0x8 ;normalize
+	   LSR R2, R1, #0x2 ;x = x/4
+	   STR R2, [SP,#nvicEI_quotient] ;store quotient
+	   LSL R2, #0x2  ; x = x* 4
+	   STR R2, [SP, #nvicEI_product] ; store product
+	   LDR R1, [SP,#nvicEI_par1]
+	   AND R1, #0x000000fF
+	   ;LSR R1, #0x8 ; normalize
+	   SUB R1, R1, R2
+	   ;times 8 - because there are one byte per IRQ channel
+       LSL R1, #0x3	   
+	   STR R1, [SP,nvicEI_bitPosition]
+	   ;load base register  address
+	   LDR R0, =NVIC_IPR0
+	   ;add offset
+	   LDR R1, [SP,#nvicEI_offset]
+	   ADD R0, R1
+	   ;load bit position
+	   LDR R2, [SP,#nvicEI_bitPosition]
+	   ;load priority level
+	   LDR R1, [SP,#nvicEI_par1]
+	   AND R1, #0x0000FF00 ;extract parameter
+	   LSR R1, #0x8 ;normalize
+	   LSL R1, R1, R2  ;shift  left on specifified position
+	   ;update intrrrupt priority reg
+	   LDR R2, [R0]
+	   ORR R2, R1  ;apply pri level
+	   STR R2, [R0] 
+   
+  ADD SP, SP, #24 ;  4*6= 24bytes free memory to stack
+  POP {R0}
+  BX LR
+	ENDP
+		
+		
   EXPORT gpio_init
 gpio_init   PROC
     LDR R0, =(1)|(1<<2)|(1<<3)|(1<<4)   ; enable alternate, GPIOC  GPIOA GPIOB
@@ -694,7 +785,13 @@ spi1MasterTxOnlyIt PROC
 	LDR R1, =(1<<12) ;bit 12 -enable SPI1 
 	ORR R2, R1 ;apply changes
 	STR R2, [R0] ;strore updated data
-	;1A)Clear registers
+	 ;1A)Enable SPI1 interrupts in NVIC
+    LDR R0, =NVIC_ISER1
+    LDR R1, [R0] ;load ISER1
+    LDR R2, =(1<<3)
+    ORR R1, R2 ;apply new
+    STR R1, [R0] ;store ISER1
+	;1B)Clear registers
 	LDR R0, =SPI1_CR1
 	LDR R1, =0x0
 	STR R1, [R0]
@@ -785,12 +882,7 @@ lb001
     LDR R1, [R0] ;load current CR1
     ORR R1, R2 ;apply new
     STR R1, [R0] ;save CR1
-  ;10)Enable SPI1 interrupts in NVIC
-    LDR R0, =NVIC_ISER1
-    LDR R1, [R0] ;load ISER1
-    LDR R2, =(1<<3)
-    ORR R1, R2 ;apply new
-    STR R1, [R0] ;store ISER1
+ 
    ;free stack from function parameters
 	ADD SP,SP,#8
 	BX LR
@@ -911,7 +1003,7 @@ L0013		LDR R0, =SPI1_CR1
 	BX LR
 	ENDP 
 	LTORG	
-	
+;---HAD NOT BEEN DEBUGGED!--------------	
 ;---FUNCTION-----SPI1-Master-Full--Duplex-with-interrupts
 ;A4-NSS, A5-SCK, A6-MISO, A7-MOSI
    EXPORT spi1MasterFullDuplexIt
@@ -1043,6 +1135,12 @@ lbHardwareSS_12
 ;--F U N C T I O N-----SPI1-Master-Transmitter-with-DMA-
    EXPORT spi1MasterOnlyTransmitterDMAIt
 spi1MasterOnlyTransmitterDMAIt  PROC 
+ ;NECCESSERY NOTE for PROGRAMMERS: to S T A R T  DMA transmission- 
+	;1)When run second time or later - Set DMA1_CNDTR3 amount of words in transaction
+	     ;(it cleared at the end of each transaction)
+		 ;When it runs for the first time - in shoul be setted later  
+	;2)Turn ON DMA1_CCR3 [bit 0]. Transaction is starting NOW.
+;***************************************************************************	
 ;INFO: point "."  a separator of nibbles (4bit fields), '|' byte separator
 ;parameter1 @ [frame_length.divider|LSBFIRST|SSM|CPOL.CPHA]
 ;----------------------------
@@ -1063,6 +1161,13 @@ spi1MasterOnlyTransmitterDMAIt  PROC
     LDR R1, [R0] ;load curent CRL
     ORR R1, R2 ;apply
     STR R1, [R0] ;store CRL
+	;enable  c) DMA interrupts
+	LDR R0, =NVIC_ISER0
+	LDR R1, [R0]
+	LDR R2, =(1 << 13)   ; Enable interrupt for DMA1 Channel3 (IRQ12 corresponds to DMA1 Channel3)
+	ORR R1, R2
+	STR R1, [R0]
+	
 	;1)Enable peripherial a) SPI:
 	LDR R0, =RCC_APB2ENR
 	LDR R2, [R0] ;load current CR1 value
@@ -1075,6 +1180,7 @@ spi1MasterOnlyTransmitterDMAIt  PROC
 	LDR R1, [R0] ;load current 
 	ORR R1, R2 ;modify
 	STR R1, [R0] ;update AHBENR
+	
 	;1A)Clear registers
 	LDR R0, =SPI1_CR1
 	LDR R1, =0x0
@@ -1093,7 +1199,7 @@ spi1MasterOnlyTransmitterDMAIt  PROC
 		LDR R2, =(1<<9)|(1<<8) ;SSM->bit9, SSI->bit8
 		ORR R1, R2 ;update
 		STR R1, [R0] ;store
-		B 31
+		B L31
 lbHardwareSS_4
     ;when software slave mgm OFF - hardware management
 	;a)enable pin GPIOA4 (NSS pin)
@@ -1108,7 +1214,7 @@ lbHardwareSS_4
 	LDR R2, =(1<<2) ;SSOE bit 2
 	ORR R1, R2  ;apply new value 
 	STR R1, [R0] ;  store
-31
+L31
    ;3)Set up divider
     LDR R0, =SPI1_CR1 
     LDR R1, [SP]
@@ -1161,9 +1267,9 @@ lbHardwareSS_4
 	LDR R2, =(1<<1)
 	ORR R1, R2
 	STR R1, [R0]
-  ;9)Master mode (b2=1) and disable SPI (b6=0)
+  ;9)Master mode (b2=1) and enable SPI (b6=1)
     LDR R0, =SPI1_CR1
-    LDR R2, =(1<<2)
+    LDR R2, =(1<<2)|(1<<6)
     LDR R1, [R0] ;load current CR1
     ORR R1, R2 ;apply new
     STR R1, [R0] ;save CR1    
@@ -1175,7 +1281,7 @@ lbHardwareSS_4
    ;b) peripherial address
 	LDR R0, =DMA1_CPAR3
 	LDR R1, =SPI1_DR
-	LDR R1, [R0]
+	STR R1, [R0]
    ;c)memory address
 	LDR R0, =DMA1_CMAR3
 	LDR R1, [SP,#4]
@@ -1213,17 +1319,189 @@ oneByteDataX
 	LSR R2, #11 ;move to b5 in acc to CCR
 	ORR R1, R2 ;update
 	STR R1, [R0] ;save
-   ;i)Enable DMA chsnnel
-    LDR R1 ,[R0]
-	LDR R2, =0x00000001
-	ORR R1, R2
-	STR R1, [R0]
-   ;j) Enable SPI
-    LDR R0, =SPI1_DR
-	LDR R2, =(1<<6)
+   
+    ;free memory
+	ADD SP,SP,#0x12
+	BX LR
+	ENDP 
+	LTORG	
+	
+	
+	;    ***
+	;--F U N C T I O N-----SPI1-slave-Rx-with DMA
+   EXPORT spi1SlaveOnlyReceiverDMAIt
+spi1SlaveOnlyReceiverDMAIt  PROC 
+;***************************************************************************	
+;INFO: point "."  a separator of nibbles (4bit fields), '|' byte separator
+;parameter1 @ [frame_length.-|LSBFIRST|SSM|CPOL.CPHA]
+;----------------------------
+;bits:
+;(0-3) CPHA , (16-23) LSBFIRST
+;(4-7) CPOL , (24-27) - 
+;(8-15) SSM , (28-31) frame length
+;---------------------------
+;parameter2 @ [addressOfBuffer]
+;---------------------------
+;parameter3 @ [-|circularMode|wordsInBuffer]
+;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
+;circularMode - enable circular mode
+;------------------------------
+   ;preparing: GPIOs  A5, A7
+    LDR R0, =GPIOA_CRL
+    LDR R2, =0x40400000 ;PA7, PA5 digital input
+    LDR R1, [R0] ;load curent CRL
+    ORR R1, R2 ;apply
+    STR R1, [R0] ;store CRL
+	;enable  c) DMA interrupts
+	LDR R0, =NVIC_ISER0
 	LDR R1, [R0]
+	LDR R2, =(1 << 12)   ; Enable interrupt for DMA1 Channel2 (IRQ12 corresponds to DMA1 Channel3)
 	ORR R1, R2
 	STR R1, [R0]
+	
+	;1)Enable peripherial a) SPI:
+	LDR R0, =RCC_APB2ENR
+	LDR R2, [R0] ;load current CR1 value
+	LDR R1, =(1<<12) ;bit 12 -enable SPI1  
+	ORR R2, R1 ;apply changes
+	STR R2, [R0] ;strore updated data
+	;enable peripherial b) DMA1:
+	LDR R0, =RCC_AHBENR
+	LDR R2, =0x1 ; bit0 DMA1EN
+	LDR R1, [R0] ;load current 
+	ORR R1, R2 ;modify
+	STR R1, [R0] ;update AHBENR
+	
+	;1A)Clear registers
+	LDR R0, =SPI1_CR1
+	LDR R1, =0x0
+	STR R1, [R0]
+	LDR R0, =SPI1_CR2
+	STR R1, [R0]
+	;2)Is there software select management?
+	LDR R1, [SP]
+	LDR  R2, =(1<<8) ; bit8 - SSM
+	ANDS R1, R2
+	BEQ lbHardwareSS1_4
+		;when software slave ON
+		;a) turn on SSM and SSI bits.  
+		LDR R0, =SPI1_CR1
+		LDR R1, [R0] ;load current
+		LDR R2, =(1<<9)|(1<<8) ;SSM->bit9, SSI->bit8
+		ORR R1, R2 ;update
+		STR R1, [R0] ;store
+		B L311
+lbHardwareSS1_4
+    ;when software slave mgm OFF - hardware management
+	;a)enable pin GPIOA4 (NSS pin)
+	LDR R0, =GPIOA_CRL
+	LDR R1, [R0] ; load current value
+	LDR R2, =0x00040000  ;A4 input digital
+	ORR R2, R1
+	STR R2, [R0]
+	;b)enable SS output
+	LDR R0, =SPI1_CR2
+	LDR R1, [R0]
+	LDR R2, =(1<<2) ;SSOE bit 2
+	ORR R1, R2  ;apply new value 
+	STR R1, [R0] ;  store
+L311
+  ;4)SetUp phase and polarity
+    LDR R1, [SP]
+    LDR R2, =0x00000011
+    AND R2, R1
+    MOV R3, R2 ;copy 
+    LSR R2, R2, #3 ;shift CPOL in according to the CR1
+	AND R3, #1
+    ORR R2, R3  ; apply CPHA bit
+    LDR R1, [R0] ;load current
+    ORR R1, R2 ;apply new
+    STR R1, [R0] ;store
+  ;5)Frmae length (DFF  bit11)
+    LDR R0, =SPI1_CR1
+    LDR R1, [SP]
+    LDR R2, =0x10000000
+    AND R1, R2 ;filter DFF
+    LSR R1, R1, #17 ;shit the bit to b11 as in CR1
+    LDR R2, [R0] ;load CR1
+    ORR R1, R2 ;apply new
+    STR R1, [R0] ;store changes
+ ;6)LSB/MSBIFRST
+    LDR R1, [SP]
+    LDR R2, =0x00010000
+    AND R1, R2 ;extract LSBFIRST bit
+    LSR R1, R1, #9 ;sift to bit7 
+    LDR R2, [R0] ;load current
+    ORR R1, R2 ;apply
+    STR R1, [R0] ;save CR1
+  ;7)Setting Rx only mode
+   ;BIDIMODE b15=1 (bidirectional MOSI line)
+   ;BIDIOE b14=0  
+   ;RXONLY b10=1 (Rx only) 
+    LDR R1, =(1<<10)  ;(1<<15)|
+    LDR R2, [R0] ;load current CR1
+    ORR R1, R2 ;apply new data
+    STR R1, [R0] ;save 
+
+  ;8)Enable DMA channel processing on Rx
+    LDR R0, =SPI1_CR2
+	LDR R1, [R0]
+	LDR R2, =0x1
+	ORR R1, R2
+	STR R1, [R0]
+  ;9)Slave mode (b2=0) and enable SPI (b6=1)
+    LDR R0, =SPI1_CR1
+    LDR R2, =(1<<6)
+    LDR R1, [R0] ;load current CR1
+    ORR R1, R2 ;apply new
+    STR R1, [R0] ;save CR1    
+  ;10)Initializing DMA1_CH2 for Rx
+   ;a)disable DMA1 channel 2 (clear register)
+    LDR R0, =DMA1_CCR2
+	LDR R2, =0x00000000
+	STR R2, [R0]
+   ;b) peripherial address
+	LDR R0, =DMA1_CPAR2
+	LDR R1, =SPI1_DR
+	STR R1, [R0]
+   ;c)memory address
+	LDR R0, =DMA1_CMAR2
+	LDR R1, [SP,#4]
+	STR R1, [R0]
+   ;d)number_of_words_to_transmitt
+	LDR R0, =DMA1_CNDTR2
+	LDR R1, [SP,#8]
+	LDR R2, =0x0000FFFF
+	AND R1, R2 ;extract b0-b16
+	STR R1, [R0] ; save
+   ;e) Is there 8 bits or 16 bits?
+	LDR R1, [SP]
+	LDR R2, =0x10000000
+	ANDS R1, R2
+	BEQ oneByteDataX1
+	  ;16 bit word 
+	  LDR R0, =DMA1_CCR2
+	  LDR R1, [R0]
+	  LDR R2, =0x00000500 ;psize and msize = 2 bytes
+	  ORR R1, R2
+	  STR R1, [R0]	
+oneByteDataX1
+       ;8 bit word - default value (b11-b8), so do nothing
+   ;f)memory increment b7, memory-to-peripherial b4
+    LDR R1, [R0]
+    LDR R2, =(1<<7) ;|(1<<4)
+    ORR R1,R2
+   ;g)interrupt on half (b2) and full (b1) transfer complete 
+    LDR R2, =(1<<1) ;full transfer IT
+	ORR R1, R2
+   ;h)Circular mode 
+    LDR R2, [SP, #8]
+	LDR R3, =0x00010000  ;extract bit mask
+	AND R2, R3 
+	LSR R2, #11 ;move to b5 in acc to CCR
+	ORR R1, R2 ;update
+	STR R1, [R0] ;save
+   
     ;free memory
 	ADD SP,SP,#0x12
 	BX LR

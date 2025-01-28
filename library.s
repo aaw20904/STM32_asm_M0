@@ -1327,10 +1327,13 @@ oneByteDataX
 	LTORG	
 	
 	
-	;    ***
+	;***TEST**PASSED*****
 	;--F U N C T I O N-----SPI1-slave-Rx-with DMA
    EXPORT spi1SlaveOnlyReceiverDMAIt
 spi1SlaveOnlyReceiverDMAIt  PROC 
+;--To start : 2)Clear SSI (bit8) SPI1_CR1
+;             1)Enable DMA1 channel 2 (Bit0) DMA1_CCR2
+;             3)When mode NOT circular - update DMA1_CNDTR2 register after end of DMA transaction 
 ;***************************************************************************	
 ;INFO: point "."  a separator of nibbles (4bit fields), '|' byte separator
 ;parameter1 @ [frame_length.-|LSBFIRST|SSM|CPOL.CPHA]
@@ -1346,31 +1349,81 @@ spi1SlaveOnlyReceiverDMAIt  PROC
 ;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
 ;circularMode - enable circular mode
 ;------------------------------
-   ;preparing: GPIOs  A5, A7
-    LDR R0, =GPIOA_CRL
-    LDR R2, =0x40400000 ;PA7, PA5 digital input
-    LDR R1, [R0] ;load curent CRL
-    ORR R1, R2 ;apply
-    STR R1, [R0] ;store CRL
-	;enable  c) DMA interrupts
-	LDR R0, =NVIC_ISER0
-	LDR R1, [R0]
-	LDR R2, =(1 << 12)   ; Enable interrupt for DMA1 Channel2 (IRQ12 corresponds to DMA1 Channel3)
-	ORR R1, R2
-	STR R1, [R0]
-	
-	;1)Enable peripherial a) SPI:
-	LDR R0, =RCC_APB2ENR
-	LDR R2, [R0] ;load current CR1 value
-	LDR R1, =(1<<12) ;bit 12 -enable SPI1  
-	ORR R2, R1 ;apply changes
-	STR R2, [R0] ;strore updated data
-	;enable peripherial b) DMA1:
+	;D-1)enable peripherial b) DMA1:
 	LDR R0, =RCC_AHBENR
 	LDR R2, =0x1 ; bit0 DMA1EN
 	LDR R1, [R0] ;load current 
 	ORR R1, R2 ;modify
 	STR R1, [R0] ;update AHBENR
+	;D-2) enable    DMA interrupts (IRQ12)
+	  ;-when an inner procedure has been calling - save LR in the stack before
+	  ;and restore it after inner procedure
+	  PUSH {LR}
+	   ;one@[-|-|priority|IRQ_Number]
+	  LDR R0, =0x0000000C
+	  PUSH {R0} ;store LR for inner call
+	  BL nvicEnableIRQ
+	  POP {LR} ;restore LR
+	;D-3)Enable peripherial Clock SPI:
+	LDR R0, =RCC_APB2ENR
+	LDR R2, [R0] ;load current CR1 value
+	LDR R1, =(1<<12) ;bit 12 -enable SPI1  
+	ORR R2, R1 ;apply changes
+	STR R2, [R0] ;strore updated data
+    ;D-4) GPIOA clock enable ????
+	;D-5)GPIOA  init
+	LDR R0, =GPIOA_CRL
+    LDR R2, =0x40400000 ;PA7, PA5 digital input
+    LDR R1, [R0] ;load curent CRL
+    ORR R1, R2 ;apply
+    STR R1, [R0] ;store CRL
+	;D-6) DMA init
+	;a)disable DMA1 channel 2 (clear register)
+    LDR R0, =DMA1_CCR2
+	LDR R2, =0x00000000
+	STR R2, [R0]
+   ;b) peripherial address
+	LDR R0, =DMA1_CPAR2
+	LDR R1, =SPI1_DR
+	STR R1, [R0]
+   ;c)memory address
+	LDR R0, =DMA1_CMAR2
+	LDR R1, [SP,#4]
+	STR R1, [R0]
+   ;d)number_of_words_to_transmitt
+	LDR R0, =DMA1_CNDTR2
+	LDR R1, [SP,#8]
+	LDR R2, =0x0000FFFF
+	AND R1, R2 ;extract b0-b16
+	STR R1, [R0] ; save
+   ;e) Is there 8 bits or 16 bits?
+	LDR R1, [SP]
+	LDR R2, =0x10000000
+	ANDS R1, R2
+	BEQ oneByteDataX1
+	  ;16 bit word 
+	  LDR R0, =DMA1_CCR2
+	  LDR R1, [R0]
+	  LDR R2, =0x00000500 ;psize and msize = 2 bytes
+	  ORR R1, R2
+	  STR R1, [R0]	
+oneByteDataX1
+       ;8 bit word - default value (b11-b8), so do nothing
+   ;f)memory increment b7, memory-to-peripherial b4
+    LDR R1, [R0]
+    LDR R2, =(1<<7) ;|(1<<4)
+    ORR R1,R2
+   ;g)interrupt on half (b2) and full (b1) transfer complete 
+    LDR R2, =(1<<1)|(1<<2) ;full and half transfer IT
+	ORR R1, R2
+   ;h)Circular mode 
+    LDR R2, [SP, #8]
+	LDR R3, =0x00010000  ;extract bit mask
+	AND R2, R3 
+	LSR R2, #11 ;move to b5 in acc to CCR
+	ORR R1, R2 ;update
+	STR R1, [R0] ;save
+	;D-7)SPI init
 	
 	;1A)Clear registers
 	LDR R0, =SPI1_CR1
@@ -1395,10 +1448,10 @@ lbHardwareSS1_4
     ;when software slave mgm OFF - hardware management
 	;a)enable pin GPIOA4 (NSS pin)
 	LDR R0, =GPIOA_CRL
-	LDR R1, [R0] ; load current value
-	LDR R2, =0x00040000  ;A4 input digital
-	ORR R2, R1
-	STR R2, [R0]
+	LDR R1, [R0]
+	LDR R2, =0x40440000 ;A4,A5, A7 - digital input
+	ORR R1, R2
+	STR R1, [R0]
 	;b)enable SS output
 	LDR R0, =SPI1_CR2
 	LDR R1, [R0]
@@ -1407,6 +1460,7 @@ lbHardwareSS1_4
 	STR R1, [R0] ;  store
 L311
   ;4)SetUp phase and polarity
+    LDR R0, =SPI1_CR1
     LDR R1, [SP]
     LDR R2, =0x00000011
     AND R2, R1
@@ -1456,51 +1510,7 @@ L311
     ORR R1, R2 ;apply new
     STR R1, [R0] ;save CR1    
   ;10)Initializing DMA1_CH2 for Rx
-   ;a)disable DMA1 channel 2 (clear register)
-    LDR R0, =DMA1_CCR2
-	LDR R2, =0x00000000
-	STR R2, [R0]
-   ;b) peripherial address
-	LDR R0, =DMA1_CPAR2
-	LDR R1, =SPI1_DR
-	STR R1, [R0]
-   ;c)memory address
-	LDR R0, =DMA1_CMAR2
-	LDR R1, [SP,#4]
-	STR R1, [R0]
-   ;d)number_of_words_to_transmitt
-	LDR R0, =DMA1_CNDTR2
-	LDR R1, [SP,#8]
-	LDR R2, =0x0000FFFF
-	AND R1, R2 ;extract b0-b16
-	STR R1, [R0] ; save
-   ;e) Is there 8 bits or 16 bits?
-	LDR R1, [SP]
-	LDR R2, =0x10000000
-	ANDS R1, R2
-	BEQ oneByteDataX1
-	  ;16 bit word 
-	  LDR R0, =DMA1_CCR2
-	  LDR R1, [R0]
-	  LDR R2, =0x00000500 ;psize and msize = 2 bytes
-	  ORR R1, R2
-	  STR R1, [R0]	
-oneByteDataX1
-       ;8 bit word - default value (b11-b8), so do nothing
-   ;f)memory increment b7, memory-to-peripherial b4
-    LDR R1, [R0]
-    LDR R2, =(1<<7) ;|(1<<4)
-    ORR R1,R2
-   ;g)interrupt on half (b2) and full (b1) transfer complete 
-    LDR R2, =(1<<1) ;full transfer IT
-	ORR R1, R2
-   ;h)Circular mode 
-    LDR R2, [SP, #8]
-	LDR R3, =0x00010000  ;extract bit mask
-	AND R2, R3 
-	LSR R2, #11 ;move to b5 in acc to CCR
-	ORR R1, R2 ;update
-	STR R1, [R0] ;save
+   
    
     ;free memory
 	ADD SP,SP,#0x12

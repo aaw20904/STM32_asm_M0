@@ -16,7 +16,48 @@ nvicEI_bitPosition EQU 0x10
 nvicEI_quotient EQU 0xC
 nvicEI_product EQU 0x08
 nvicEI_remainder EQU 0x04
-nvicEI_var1 EQU 0x00	  
+nvicEI_var1 EQU 0x00	 
+   ;Part 1. Priority level set
+  ;A) offset address
+   LDR R1, [SP,#nvicEI_par1]
+   AND R1, R1, #0x000000FF ;extract IRQ priority
+   ;LSR R1, R1, #0x8 ;normalize
+   LSR R1, R1, #0x2  ; x = x / 4
+   LSL R1 , R1 , #0x2 ; additional address fo r offset x = x * 4
+   STR R1, [SP,#nvicEI_offset] 
+   ;B)Bit field position
+   LDR R1, [SP,#nvicEI_par1]
+   AND R1, R1, #0x000000ff;extract IRQ number
+   ;LSR R1, #0x8 ;normalize
+   LSR R2, R1, #0x2 ;x = x/4
+   STR R2, [SP,#nvicEI_quotient] ;store quotient
+   LSL R2, #0x2  ; x = x* 4
+   STR R2, [SP, #nvicEI_product] ; store product
+   LDR R1, [SP,#nvicEI_par1]
+   AND R1, #0x000000fF
+   ;LSR R1, #0x8 ; normalize
+   SUB R1, R1, R2
+   ;times 8 - because there are one byte per IRQ channel
+   LSL R1, #0x3	   
+   STR R1, [SP,nvicEI_bitPosition]
+   ;load base register  address
+   LDR R0, =NVIC_IPR0
+   ;add offset
+   LDR R1, [SP,#nvicEI_offset]
+   ADD R0, R1
+   ;load bit position
+   LDR R2, [SP,#nvicEI_bitPosition]
+   ;load priority level
+   LDR R1, [SP,#nvicEI_par1]
+   AND R1, #0x0000FF00 ;extract parameter
+   LSR R1, #0x8 ;normalize
+   LSL R1, R1, R2  ;shift  left on specifified position
+   ;update intrrrupt priority reg
+   LDR R2, [R0]
+   ORR R2, R1  ;apply pri level
+   STR R2, [R0]
+   ;*****   
+	;Part 2. Enable channel process: 	
   ;A) offset address
    LDR R1, [SP,#nvicEI_par1]
    AND R1, R1, #0x000000FF ;extract IRQ number
@@ -47,45 +88,7 @@ nvicEI_var1 EQU 0x00
    LDR R2, [R0]
    ORR R2, R3  ;apply bit
    STR R2, [R0]
-   ;Part 2. Priority level set
-	  ;A) offset address
-	   LDR R1, [SP,#nvicEI_par1]
-	   AND R1, R1, #0x000000FF ;extract IRQ priority
-	   ;LSR R1, R1, #0x8 ;normalize
-	   LSR R1, R1, #0x2  ; x = x / 4
-	   LSL R1 , R1 , #0x2 ; additional address fo r offset x = x * 4
-	   STR R1, [SP,#nvicEI_offset] 
-	   ;B)Bit field position
-	   LDR R1, [SP,#nvicEI_par1]
-	   AND R1, R1, #0x000000ff;extract IRQ number
-	   ;LSR R1, #0x8 ;normalize
-	   LSR R2, R1, #0x2 ;x = x/4
-	   STR R2, [SP,#nvicEI_quotient] ;store quotient
-	   LSL R2, #0x2  ; x = x* 4
-	   STR R2, [SP, #nvicEI_product] ; store product
-	   LDR R1, [SP,#nvicEI_par1]
-	   AND R1, #0x000000fF
-	   ;LSR R1, #0x8 ; normalize
-	   SUB R1, R1, R2
-	   ;times 8 - because there are one byte per IRQ channel
-       LSL R1, #0x3	   
-	   STR R1, [SP,nvicEI_bitPosition]
-	   ;load base register  address
-	   LDR R0, =NVIC_IPR0
-	   ;add offset
-	   LDR R1, [SP,#nvicEI_offset]
-	   ADD R0, R1
-	   ;load bit position
-	   LDR R2, [SP,#nvicEI_bitPosition]
-	   ;load priority level
-	   LDR R1, [SP,#nvicEI_par1]
-	   AND R1, #0x0000FF00 ;extract parameter
-	   LSR R1, #0x8 ;normalize
-	   LSL R1, R1, R2  ;shift  left on specifified position
-	   ;update intrrrupt priority reg
-	   LDR R2, [R0]
-	   ORR R2, R1  ;apply pri level
-	   STR R2, [R0] 
+   
    
   ADD SP, SP, #24 ;  4*6= 24bytes free memory to stack
   POP {R0}
@@ -1151,36 +1154,40 @@ spi1MasterOnlyTransmitterDMAIt  PROC
 ;---------------------------
 ;parameter2 @ [addressOfBuffer]
 ;---------------------------
-;parameter3 @ [-|circularMode|wordsInBuffer]
+;parameter3 @ [-|circularMode8|wordsInBuffer16]
 ;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
 ;circularMode - enable circular mode
 ;------------------------------
-   ;preparing: GPIOs  A5, A7
+     ;D-1)preparing: GPIOs  A5, A7
     LDR R0, =GPIOA_CRL
     LDR R2, =0xB0B00000 ;PA7, PA5 alternative push-pull, 50MHz
     LDR R1, [R0] ;load curent CRL
     ORR R1, R2 ;apply
     STR R1, [R0] ;store CRL
-	;enable  c) DMA interrupts
-	LDR R0, =NVIC_ISER0
-	LDR R1, [R0]
-	LDR R2, =(1 << 13)   ; Enable interrupt for DMA1 Channel3 (IRQ12 corresponds to DMA1 Channel3)
-	ORR R1, R2
-	STR R1, [R0]
-	
-	;1)Enable peripherial a) SPI:
-	LDR R0, =RCC_APB2ENR
-	LDR R2, [R0] ;load current CR1 value
-	LDR R1, =(1<<12) ;bit 12 -enable SPI1  
-	ORR R2, R1 ;apply changes
-	STR R2, [R0] ;strore updated data
+    ;D-2) DMA1 clock ON
 	;enable peripherial b) DMA1:
 	LDR R0, =RCC_AHBENR
 	LDR R2, =0x1 ; bit0 DMA1EN
 	LDR R1, [R0] ;load current 
 	ORR R1, R2 ;modify
 	STR R1, [R0] ;update AHBENR
-	
+	;D-3)Set DMA Priority and Enable IRQ 
+		;D-3) enable    DMA interrupts (IRQ13)
+	  ;-when an inner procedure has been calling - save LR in the stack before
+	  ;and restore it after inner procedure
+	  PUSH {LR}
+	   ;one@[-|-|priority|IRQ_Number]
+	  LDR R0, =0x0000000D
+	  PUSH {R0} ;store LR for inner call
+	  BL nvicEnableIRQ
+	  POP {LR} ;restore LR
+	 ;D-3) Enable SPI Clock
+	LDR R0, =RCC_APB2ENR
+	LDR R2, [R0] ;load current CR1 value
+	LDR R1, =(1<<12) ;bit 12 -enable SPI1  
+	ORR R2, R1 ;apply changes
+	STR R2, [R0] ;strore updated data
+
 	;1A)Clear registers
 	LDR R0, =SPI1_CR1
 	LDR R1, =0x0
@@ -1310,7 +1317,7 @@ oneByteDataX
     LDR R2, =(1<<7)|(1<<4)
     ORR R1,R2
    ;g)interrupt on half (b2) and full (b1) transfer complete 
-    LDR R2, =(1<<1) ;full transfer IT
+    LDR R2, =(1<<1)|(1<<2) 
 	ORR R1, R2
    ;h)Circular mode 
     LDR R2, [SP, #8]
@@ -1319,7 +1326,6 @@ oneByteDataX
 	LSR R2, #11 ;move to b5 in acc to CCR
 	ORR R1, R2 ;update
 	STR R1, [R0] ;save
-   
     ;free memory
 	ADD SP,SP,#0x12
 	BX LR

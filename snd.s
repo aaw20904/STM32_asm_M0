@@ -13,9 +13,9 @@ __Vectors       DCD     top_of_stack  ; Top of Stack $00000000
                 DCD     Start         ; Reset Handler  $00000004
                 DCD     Def_Vec       ; NMI Handler  $08
                 DCD     TRASH_ISR      ; Hard Fault Handler  $0C
-                DCD     Def_Vec       ; MPU Fault Handler    $10
-                DCD     Def_Vec       ; Bus Fault Handler   $14
-                DCD     Def_Vec      ; Usage Fault Handler   $18
+                DCD     TRASH_ISR_MPU      ; MPU Fault Handler    $10
+                DCD     TRASH_ISR_BUS      ; Bus Fault Handler   $14
+                DCD     TRASH_ISR_USAGE    ; Usage Fault Handler   $18
                 DCD     0                          ; Reserved
                 DCD     0                          ; Reserved
                 DCD     0                          ; Reserved
@@ -39,8 +39,8 @@ __Vectors       DCD     top_of_stack  ; Top of Stack $00000000
                 DCD     Def_Vec    ; EXTI Line 3  $64
                 DCD     Def_Vec    ; EXTI Line 4  $68
                 DCD     Def_Vec   ; DMA1 Channel 1  $6C
-                DCD     Def_Vec   ; DMA1 Channel 2  $70
-                DCD     Def_Vec   ; DMA1 Channel 3  $74
+                DCD     spi1DmaRx   ; DMA1 Channel 2  $70
+                DCD     spi1DmaTx  ; DMA1 Channel 3  $74
                 DCD     Def_Vec   ; DMA1 Channel 4  $78
                 DCD     Def_Vec   ; DMA1 Channel 5  $7C
                 DCD     DMA1_CH6_ISR   ; DMA1 Channel 6   $80
@@ -62,7 +62,7 @@ __Vectors       DCD     top_of_stack  ; Top of Stack $00000000
                 DCD     Def_Vec    ; I2C1 Error                   $C0
                 DCD     Def_Vec    ; I2C2 Event                   $C4
                 DCD     Def_Vec    ; I2C2 Error                   $C8
-                DCD     Def_Vec    ; SPI1                      $CC
+                DCD     spi1Interrupt    ; SPI1                      $CC
                 DCD     Def_Vec    ; SPI2                      $D0
                 DCD     Def_Vec    ; USART1                      $D4
                 DCD     usart2ISR    ; USART2                      $D8
@@ -76,12 +76,15 @@ prompt   DCB "Donald Duck is our favorite candidate in President election!!!!!!!
    
    AREA glVariables, DATA, READWRITE
 uartRxBuffer      SPACE 32	
-uartTxBuffer      SPACE 32	
+uartTxBuffer      SPACE 32
+intermBuffer      SPACE 32	
 dma1_7_disable_ch SPACE 4
 dma1_7_data_to_transmit SPACE 4
 semaphore         SPACE 4
 byteCounter       SPACE 4
 bytePointer       SPACE 4
+int32TestVar1     SPACE 4
+debugBuffer       SPACE 64
 
 
    AREA MainCode, CODE, READONLY
@@ -95,19 +98,19 @@ Start         PROC
 	  LDR R0, =semaphore
 	  STR R1, [R0]
 	  LDR R0, =byteCounter
-	  LDR R1, =0x00000008
+	  LDR R1, =0x9
 	  STR R1, [R0] ;init byte counter
 	  LDR R1, =0x00000000
       LDR r0, =RCC_APB2ENR
 	  STR R1, [R0]  ;clear APB2ENR
 	  
-	  LDR R1, =uartTxBuffer
+	  LDR R1, =intermBuffer
       LDR R0, =bytePointer
       STR R1, [R0]	;initialize pointer  
 	 
 	  BL gpio_init     ; Call the gpio_init procedure from the other file
-	 
-	  ;--
+
+
 	  LDR R0, =GPIOA_CRH
 	  LDR R1, =0x0000000B
 	  STR R1,[R0]
@@ -117,7 +120,7 @@ Start         PROC
 	  STR R1, [R0]
 	  ;PORT B h
 	  LDR R0, =GPIOB_CRH
-	  LDR R1, =0x44444444
+	  LDR R1, =0x34444444  ;C15 - output
 	  STR R1,[R0]
 	  ;PORTB low
 	  LDR R0, =GPIOB_CRL
@@ -139,12 +142,17 @@ Start         PROC
 	  LDR R0, =EXTI_RTSR
 	  LDR R1, =(1 << 14)  ; bit 14 on rising edge
 	  STR R1, [R0]
+	  ;priority level
+	   LDR R0,=0xE000E428       ; Address of NVIC_IPR10
+	   LDR R1, [R0]
+	   LDR R2, =0x04
+	   ORR R1, R2
+	   STR R1, [R0]
 	  ;Enable EXTI14 Interrupt in NVIC
-	   LDR R0, =NVIC_ISER1        ; NVIC_ISER1 address (for IRQ numbers 32-63)
-       LDR R1, =(1 << (40 - 32)) ; Enable IRQ40 (EXTI14 is IRQ40)
-       STR R1, [R0]              ; Write to NVIC_ISER1
 	  
-	  
+	   ;LDR R0, =NVIC_ISER1        ; NVIC_ISER1 address (for IRQ numbers 32-63)
+       ;LDR R1, =(1 << (40 - 32)) ; Enable IRQ40 (EXTI14 is IRQ40)
+       ;STR R1, [R0]              ; Write to NVIC_ISER1
 	  ;----------------------C L O C K --------------------
 	  ;---------sys_clock = (12 288 000Hz / 2) * 5 = 30 720 000 
 	  LDR R5, =0x03010001
@@ -162,46 +170,59 @@ Start         PROC
 	  LDR R0, =0x01002000 ; bit13 
 	  LDR R1, =GPIOC_ODR
 	  STR R0,[R1]
-	  ;address of  on/off register for a led
-	  ;LDR R1, =0x007A1200;
-	  ;LDR R2, =0x00bb;
-	  ;PUSH {R1,R2}
-	  ;BL tim2OcCh2Setup
-	    
-	 
-;=======FUNCTION uart_init_tx with Interrupt
-;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)] 
-;par2@[-|-|-|interrups]
-;WordLength: WHEN 1 -> 1 Start bit, 9 Data bits, n Stop bit
-;            WHEN 0-> 0: 1 Start bit, 8 Data bits, n Stop bit
-;StopBits: 0b00-> 1 bit, b01-> 0.5 Stop bit, b10-> 2 Stop bits, b11-> 1.5 Stop bit,
-       ; LDR R0, =0x00000905
-	    ;LDR R1, =0x00000000
-	    ;PUSH {R0,R1}
-	    ;BL uart_init_tx
-	   
-;=======FUNCTION uart_init_rx with DMA
-;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)]  
-;--par2@[-|interrupt_RX_enable(8)|parity_type(8)|prity_en(8)]
-;--par3@[pointerToDmaBuffer]   
-;--par4@[null(4)|DMA_TC_interrupt(4)|priority_channel(8)|buffer_size(16)]
-;WordLength: WHEN 1 -> 1 Start bit, 9 Data bits, n Stop bit
-;            WHEN 0-> 0: 1 Start bit, 8 Data bits, n Stop bit
-;StopBits: 0b00-> 1 bit, 0b01-> 0.5 Stop bit, b10-> 2 Stop bits, b11-> 1.5 Stop bit,
-;parity_en:   0-> disable parity, 1-> enable parity
-;parity_type: 1->odd, 0->even
-;interrupt_enable: FF->enable
-       ;LDR R0, =0x00000C80	   
-	   ;LDR R1, =0x00000000
-	   ;LDR R2, =uartRxBuffer
-	   ;LDR R3, =0x0F010020
-	   ;PUSH {R0,R1,R2,R3}
-	   ;BL uart_init_rx_dma
-	   ;LDR R0,=DMA1_CCR6
-       ;LDR R2, =0x1
-       ;LDR R1,[R0]
-       ;ORR R1,R2
-	   
+   
+	 	  ;-----SPI-INIT-BEGIN---
+  ;initializing debug buffer
+
+   LDR R0, =debugBuffer;
+   LDR R1, =0x00000001
+lb_0001
+   STRH R1, [R0]   
+   ADD R1, #0x1
+   ADD R0, #0x2
+   TEQ R1, #0x0000000A
+   BNE lb_0001   
+  
+;--F U N C T I O N-----SPI1-Master-Transmitter-with-DMA-
+ 
+   
+ ;NECCESSERY NOTE for PROGRAMMERS: to S T A R T  DMA transmission- 
+	;1)When run second time or later - Set DMA1_CNDTR3 amount of words in transaction
+	     ;(it cleared at the end of each transaction)
+		 ;When it runs for the first time - in shoul be setted later  
+	;2)Turn ON DMA1_CCR3 [bit 0]. Transaction is starting NOW.
+;***************************************************************************	
+;INFO: point "."  a separator of nibbles (4bit fields), '|' byte separator
+;parameter1 @ [frame_length.divider|LSBFIRST|SSM|CPOL.CPHA]
+;----------------------------
+;bits:
+;(0-3) CPHA , (16-23) LSBFIRST
+;(4-7) CPOL , (24-27) Divider 0->clk/2 , 7->clk/256 
+;(8-15) SSM , (28-31) frame length
+;---------------------------
+;parameter2 @ [addressOfBuffer]
+;---------------------------
+;parameter3 @ [-|circularMode8|wordsInBuffer16]
+;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
+;circularMode - enable circular mode
+;------------------------------
+    LDR R0, =0x17010110
+	LDR R1, =debugBuffer
+	LDR R2, =0x00010008
+	PUSH {R0, R1, R2}
+	BL  spi1MasterOnlyTransmitterDMAIt 
+
+	LDR R0, =DMA1_CCR3
+	LDR R1, [R0]
+	LDR R2, =0x1
+	ORR R1, R2
+	STR R1, [R0]
+	
+	
+dbglab1
+    B dbglab1
+	  ;----SPI END
+
 ;=======USART2_TRANSMITTER_DRIVEN_DMA==============
 ;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)]  
 ;--par2@[-|-|-|interrupts_enable]
@@ -221,11 +242,7 @@ Start         PROC
    LDR R3, =0x00000008 ;8bytes TX ROM buffer
   PUSH {R0,R1,R2,R3}
   BL uart_init_tx_dma
-  ;LDR R0,=DMA1_CCR7
-  ;LDR R2, =0x1
-  ;LDR R1,[R0]
-  ;ORR R1,R2
-  ;STR R1,[R0]
+
   
 	;====FUNCTION initialize TIM2 CH2 Output Compare
 	;    A@[b31 presc| period b0],
@@ -235,30 +252,31 @@ Start         PROC
 		LDR R2, =0x18; //align edges
 		PUSH {R1,R2}
 		BL tim2OcCh2Setup
-		
+		nop
 	 ;FUNCTION initialization counter in simple mode with interrupt	
 	;parameters:  @32bit - [  prescaler(16)| counter(16) b0]  ,@32bit-null	
-		LDR R2, =0x00000000
-		LDR R1, =0x0000004f;0x4F - 384kHz
-		PUSH {R1,R2}
-		BL tim3SimpleModeInitInt
+		;LDR R2, =0x00000000
+		;LDR R1, =0x0000004f;0x4F - 384kHz
+		;PUSH {R1,R2}
+		;BL tim3SimpleModeInitInt   ;must be active - commented for debug
 		;clear registers
-		MOV R1, #0x0
-		MOV R4,R1 ;low 64 bit-frame (bitstream buffer)
-		MOV R5,R1 ;high 64 bit-frame (bitstream buffer)
-		MOV R1, #0x41 ;count of bits(64)
-		MOV R6,R1  ;bit counter
+		;MOV R1, #0x0
+		;MOV R4,R1 ;low 64 bit-frame (bitstream buffer)
+		;MOV R5,R1 ;high 64 bit-frame (bitstream buffer)
+		;MOV R1, #0x41 ;count of bits(64)
+		;MOV R6,R1  ;bit counter
 mylabel
      ;WFI
 	 LDR R0,=semaphore
 	 LDR R1,[R0]
-	 TST R1, R1
-	 BEQ mylabel
+	 CMP R1, #0x00000001
+	 BEQ labUartPacketReady
+	 B mylabel  ; when UART DMA packen not full ready
+labUartPacketReady
 	 LDR R1,=0x0
 	 STR R1,[R0] ;clear semaphore
 	;start DMA transmitting
 	 ;--start transaction
-	 
 	 LDR R0, =DMA1_CCR7
 	 LDR R1, [R0] ;load current 
 	 LDR R2, =0xFFFFFFFE 
@@ -272,48 +290,136 @@ mylabel
 	 LDR R2,[R0]
 	 ORR R1,R2
 	 STR R1,[R0]
-	 
-	B mylabel
-	ENDP
-;---data---area
-
-		
-		
- ;----ISR-handlers---------
- ;============default ISR handler.Infinite loop
-Def_Vec PROC
-    B   .  ; Infinite loop
-    ENDP
-;====ext vector interrupt
-gpioInterruptISR
-    LDR R0, =EXTI_PR           ; Load EXTI Pending Register address
-    LDR R1, =(1 << 14)         ; Prepare mask for EXTI Line 14
-    STR R1, [R0]               ; Write to EXTI_PR to clear the pending flag
-	;---
-	;has a byte counter reached zero?
-	LDR R0, =byteCounter
-	LDR R1, [R0]
-	TSTEQ R1, R1
-	BNE labAllBytesReady
-	;-not all bytes ahs been received in DMA buffer
-	
-	BX LR
-labAllBytesReady	
-	;--DMA buffer is full
-	
-		;---T E S T----LED BLINK--BEGIN
+	 	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
 	 LDR R0, =GPIOC_BSRR
      LDR R1, =(1 << 29)
 	 STR R1,[R0]
 	 NOP
 	 NOP
+	 LDR R1, =(1 << 13)
+	 STR R1,[R0]
+    ;-T E S T ---LED-BLINK---END
+	 
+	B mylabel
+	ENDP
+;---data---area
+ ;----ISR-handlers---------
+;  ___ ____  ____   
+; |_ _/ ___||  _ \  
+;  | |\___ \| |_) | 
+;  | | ___) |  _ <  
+; |___|____/|_| \_\ 
+                   
+ ;===exti port c=======
+ 
+spi1DmaRx  PROC
+	;clear all flags in DMA_CH3 
+	LDR R0, =DMA1_IFCR
+	LDR R1, =(1<<4) ; CGIF2
+	STR R1, [R0]
+	
+	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
+	 LDR R0, =GPIOC_BSRR
+     LDR R1, =(1 << 29)
+	 STR R1,[R0]
 	 NOP
+	 NOP
+	 LDR R1, =(1 << 13)
+	 STR R1,[R0]	
+	BX LR
+	ENDP
+ 
+spi1Interrupt PROC
+	LDR R0, =int32TestVar1
+	LDR R2, =0x000000FF ; mask
+	LDR R1, [R0]
+	ADD R1, R1, #1
+	AND R1, R2
+	STR R1, [R0]
+	LDR R0, =SPI1_DR
+	;STR R1, [R0]
+	BX LR
+	ENDP
+;--DMA1 Ch3 (SPI1) Interrupt service routine
+spi1DmaTx PROC
+	;clear all flags in DMA_CH3 
+	LDR R0, =DMA1_IFCR
+	LDR R1, =(1<<8) ; CGIF3
+	STR R1, [R0]
+	
+	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
+	 LDR R0, =GPIOC_BSRR
+     LDR R1, =(1 << 29)
+	 STR R1,[R0]
 	 NOP
 	 NOP
 	 LDR R1, =(1 << 13)
 	 STR R1,[R0]
     ;-T E S T ---LED-BLINK---END
 	BX LR
+    ENDP    
+; external interrupts 
+gpioInterruptISR  PROC
+    LDR R0, =EXTI_PR           ; Load EXTI Pending Register address
+    LDR R1, =(1 << 14)         ; Prepare mask for EXTI Line 14
+    STR R1, [R0]               ; Write to EXTI_PR to clear the pending flag
+	;---test on zero 'byteCounter' variable
+	LDR R0, =byteCounter  ;load counter
+	LDR R1, [R0]
+	SUB R1, R1, #1  ;decrement counter
+	STR R1, [R0] ;store  a counter
+	CMP R1, #0x0    ;R1 equals zero?
+	BEQ dmaByteBufferFull
+	;-wnen DMA buffer isn`t full (bytes of bitstream):
+		LDR R2, =GPIOB_IDR 
+		LDR R3, [R2]  ;read a word from GPIOB pins (b6-b13)
+		LSR R3, #6  ;shift right - because port bits are c6-c13
+		LDR R0, =bytePointer
+		LDR R1, [R0]
+		STRB R3, [R1] ;store a byte of bitstream by a pointer into array
+		ADD R1, R1, #1 ; increnet pointer
+		STR R1, [R0]  ;and store the one
+		BX LR  ;exit 
+dmaByteBufferFull	
+      ;--when DMA buffer is full:
+	  ;restore pointer
+	  LDR R0, =bytePointer
+	  LDR R1, =intermBuffer
+	  STR R1, [R0]
+	  ;restore counter
+	  LDR R0, =byteCounter
+	  LDR R1, =0x9
+	  STR R1, [R0]
+	  ;turn on the semaphore
+	  LDR R0, =semaphore
+	  LDR R1, =0x1
+	  STR R1, [R0]
+	    ;***test begin
+	  ;LDR R0, =intermBuffer
+	  ;LDR R1, =0x76543210
+	  ;STR R1, [R0]
+	  ;ADD R0, #0x4
+	  ;LDR R1, =0xFEDCBA98
+	  ;STR R1, [R0]
+	    ;***test end
+	  ;copy buffer
+	  LDR R0, =intermBuffer
+      LDR R2, =uartTxBuffer
+	  LDR R1, [R0]  ;first 4 bytes
+	  STR R1, [R2]
+	  ADD R0, #0x4  ;increment pointers
+	  ADD R2, #0x4
+	  LDR R1, [R0]  ;last 4 bytes
+	  STR R1, [R2]
+	  BX LR
+	  ENDP
+ 
+ ;============default ISR handler.Infinite loop
+Def_Vec PROC
+    B   .  ; Infinite loop
+    ENDP
+;====ext vector interrupt
+
 ;====TIM2=====ISR========		
 tim3UpdateISR   PROC
 	;clear flag UIE
@@ -327,7 +433,7 @@ tim3UpdateISR   PROC
 	;R4,R5 copying into RAM,and start DMA transmitting
     ;through uart2
      SUBS R6,#0x1
-	 BNE ds_buffer_not_full
+	 BEQ ds_buffer_not_full
 	 ;test begin
 	  ;LDR R4, =0xf0f0f0f0
 	  ;LDR R5, =0xf0f0f0f0
@@ -344,43 +450,21 @@ tim3UpdateISR   PROC
 ds_buffer_not_full
      LDR R0,=GPIOB_IDR ;read current bit
 	 LDR R1,[R0]
-	 LSL R1,#0x17
-	 MOV R0,#0x80000000
-	 ANDS R1,R0 ;input bit (GPIOB 8) in R1 now as bit31 
+	 LSL R1, #0x17
+	 MOV R0, #0x80000000
+	 ANDS R1, R0 ;input bit (GPIOB 8) in R1 now as bit31 
 	 ;i n f o  "AND(S)"-> ‘S’ is an optional suffix. If S is specified, the condition code flags are updated on the
      ;  result of the operation (see Conditional execution on page 56).
-	 LSR R4,#0x1 ;shifting right LOW 32bits
-	 LSRS R5,#0x1 ;shifting  HIGH 32bits , and result carry flag
+	 LSR R4, #0x1 ;shifting right LOW 32bits
+	 LSRS R5, #0x1 ;shifting  HIGH 32bits , and result carry flag
 	 BCC ds_no_bit_carry  ;has carry been happened?
 	  ORR R4, #0x80000000 ;set bit31 when carry
 ds_no_bit_carry
      ORR R5, R1  ;apply input bit from the port 
-    
-
-     ;--start transaction
-	 
-	 ;LDR R0, =DMA1_CCR7
-	 ;LDR R1, [R0] ;load current 
-	 ;LDR R2, =0xFFFFFFFE 
-	 ;AND R1, R2 ;disable channel
-	 ;STR R1, [R0] ;store
-	 ;LDR R0, =DMA1_CNDTR7
-	 ;LDR R1, =0x40
-	 ;STR R1, [R0]
-	 ;LDR R0,=DMA1_CCR7
-	 ;LDR R1, =0x1
-	 ;LDR R2,[R0]
-	 ;ORR R1,R2
-	 ;STR R1,[R0]
-	 
 	BX LR ;reti
 	ENDP
 ;=====USART2==Interrupt Service Routine=
 usart2ISR  PROC
-	
-	;LDR  R0,=USART2_DR
-	;LDR R1,[R0]
-	;STR R1,[R0]
 	BX LR
 	  ENDP
 ;==========DMA1 CH7 (UART2 TX)
@@ -389,9 +473,8 @@ DMA1_CH7_ISR PROC
 	LDR R0,=DMA1_IFCR
 	LDR R1,=(1<<24)
 	STR R1,[R0]
-	
    BX LR
-   ENDP
+     ENDP
 ;====DMA1 Ch6 (USART2 RX)
 DMA1_CH6_ISR PROC
 	;clear flag 
@@ -400,11 +483,36 @@ DMA1_CH6_ISR PROC
 	LDR R1,=(1<<20)
 	STR R1,[R0]
     BX LR
-         ENDP
+      ENDP
+
 ;======hard fault ISR
 TRASH_ISR PROC
+	LDR R0, =GPIOB_BSRR
+	LDR R1, =(1<<15) ;turn on led
+	STR R1, [R0]
 	B .
 	ENDP
- 
+		
+TRASH_ISR_BUS PROC
+	LDR R0, =GPIOB_BSRR
+	LDR R1, =(1<<15) ;turn on led
+	STR R1, [R0]
+	B .
+	ENDP
+
+TRASH_ISR_MPU PROC
+	LDR R0, =GPIOB_BSRR
+	LDR R1, =(1<<15) ;turn on led
+	STR R1, [R0]
+	B .
+	ENDP
+		
+TRASH_ISR_USAGE PROC
+	LDR R0, =GPIOB_BSRR
+	LDR R1, =(1<<15) ;turn on led
+	STR R1, [R0]
+	B .
+	ENDP
+
    ALIGN
    END

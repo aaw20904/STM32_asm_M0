@@ -292,7 +292,7 @@ tim2OcCh2Setup     PROC
 ; example: Fclk = 25 000 000Hz, required speed 9600 Baud
 ; divisor (BRR) = Fclk/(speed * 16) = 162.76
 ;So, whole part  (162) save in b15-b4, it equals to multiplication on 16
-; remainder_part = (remainder *16)=0.46*16=12.16, write whole number in b3-b0
+; remainder_part = (remainder *16)=0.76*16=12.16, write whole number in b3-b0
 ; Divisor (BRR) should be: [0x00000A2.C] (a point here is for more conviniency)
 
 ;=======FUNCTION uart_init_tx with Interrupt

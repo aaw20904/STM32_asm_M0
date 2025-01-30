@@ -76,7 +76,6 @@ prompt   DCB "Donald Duck is our favorite candidate in President election!!!!!!!
    
    AREA glVariables, DATA, READWRITE
 uartRxBuffer      SPACE 32	
-uartTxBuffer      SPACE 32
 intermBuffer      SPACE 32	
 dma1_7_disable_ch SPACE 4
 dma1_7_data_to_transmit SPACE 4
@@ -85,7 +84,7 @@ byteCounter       SPACE 4
 bytePointer       SPACE 4
 int32TestVar1     SPACE 4
 debugBuffer       SPACE 64
-
+uartTxBuffer      SPACE 32
 
    AREA MainCode, CODE, READONLY
 	  ; |.text|
@@ -171,38 +170,22 @@ Start         PROC
 	  LDR R1, =GPIOC_ODR
 	  STR R0,[R1]
    
-	 	  ;-----SPI-INIT-BEGIN---
-  ;initializing debug buffer
-
-   LDR R0, =debugBuffer;
-   LDR R1, =0x00000001
-lb_0001
-   STRH R1, [R0]   
-   ADD R1, #0x1
-   ADD R0, #0x2
-   TEQ R1, #0x0000000A
-   BNE lb_0001   
-  
-;--F U N C T I O N-----SPI1-Master-Transmitter-with-DMA-
  
-   
- ;NECCESSERY NOTE for PROGRAMMERS: to S T A R T  DMA transmission- 
-	;1)When run second time or later - Set DMA1_CNDTR3 amount of words in transaction
-	     ;(it cleared at the end of each transaction)
-		 ;When it runs for the first time - in shoul be setted later  
-	;2)Turn ON DMA1_CCR3 [bit 0]. Transaction is starting NOW.
+;--To start : 2)Clear SSI (bit8) SPI1_CR1
+;             1)Enable DMA1 channel 2 (Bit0) DMA1_CCR2
+;             3)When mode NOT circular - update DMA1_CNDTR2 register after end of DMA transaction 
 ;***************************************************************************	
 ;INFO: point "."  a separator of nibbles (4bit fields), '|' byte separator
-;parameter1 @ [frame_length.divider|LSBFIRST|SSM|CPOL.CPHA]
+;parameter1 @ [frame_length.-|LSBFIRST|SSM|CPOL.CPHA]
 ;----------------------------
 ;bits:
 ;(0-3) CPHA , (16-23) LSBFIRST
-;(4-7) CPOL , (24-27) Divider 0->clk/2 , 7->clk/256 
+;(4-7) CPOL , (24-27) - 
 ;(8-15) SSM , (28-31) frame length
 ;---------------------------
 ;parameter2 @ [addressOfBuffer]
 ;---------------------------
-;parameter3 @ [-|circularMode8|wordsInBuffer16]
+;parameter3 @ [-|circularMode|wordsInBuffer]
 ;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
 ;circularMode - enable circular mode
 ;------------------------------
@@ -210,17 +193,29 @@ lb_0001
 	LDR R1, =debugBuffer
 	LDR R2, =0x00010008
 	PUSH {R0, R1, R2}
-	BL  spi1MasterOnlyTransmitterDMAIt 
-
-	LDR R0, =DMA1_CCR3
+	BL   spi1SlaveOnlyReceiverDMAIt 
+    ;tusn on SPI DMA
+	;1) Clear SSI (bit8) SPI1_CR1
+	LDR R0, =SPI1_CR1
+	LDR R1, [R0]
+	LDR R2, =(1<<8)
+	MVN R2, R2
+	AND R1, R2
+	STR R1, [R0]
+	;2)Enable DMA1 CH2 (b0) in the DMA1_CCR2 reg
+	LDR R0, =DMA1_CCR2
+	LDR R1, [R0]
+	LDR R2, =0x1
+	ORR R1, R2
+	STR R1, [R0]
+	;3)Enable DMA1 channel 2 (Bit0) DMA1_CCR2
+	LDR R0, =DMA1_CCR2
 	LDR R1, [R0]
 	LDR R2, =0x1
 	ORR R1, R2
 	STR R1, [R0]
 	
-	
-dbglab1
-    B dbglab1
+ 
 	  ;----SPI END
 
 ;=======USART2_TRANSMITTER_DRIVEN_DMA==============
@@ -239,10 +234,9 @@ dbglab1
   LDR R0, =0x00000035 ;576 KBaud
   LDR R1, =0x00000000;
    LDR R2, =uartTxBuffer ;buffer address
-   LDR R3, =0x00000008 ;8bytes TX ROM buffer
+   LDR R3, =0x000000016 ;16bytes TX ROM buffer
   PUSH {R0,R1,R2,R3}
   BL uart_init_tx_dma
-
   
 	;====FUNCTION initialize TIM2 CH2 Output Compare
 	;    A@[b31 presc| period b0],
@@ -252,53 +246,7 @@ dbglab1
 		LDR R2, =0x18; //align edges
 		PUSH {R1,R2}
 		BL tim2OcCh2Setup
-		nop
-	 ;FUNCTION initialization counter in simple mode with interrupt	
-	;parameters:  @32bit - [  prescaler(16)| counter(16) b0]  ,@32bit-null	
-		;LDR R2, =0x00000000
-		;LDR R1, =0x0000004f;0x4F - 384kHz
-		;PUSH {R1,R2}
-		;BL tim3SimpleModeInitInt   ;must be active - commented for debug
-		;clear registers
-		;MOV R1, #0x0
-		;MOV R4,R1 ;low 64 bit-frame (bitstream buffer)
-		;MOV R5,R1 ;high 64 bit-frame (bitstream buffer)
-		;MOV R1, #0x41 ;count of bits(64)
-		;MOV R6,R1  ;bit counter
 mylabel
-     ;WFI
-	 LDR R0,=semaphore
-	 LDR R1,[R0]
-	 CMP R1, #0x00000001
-	 BEQ labUartPacketReady
-	 B mylabel  ; when UART DMA packen not full ready
-labUartPacketReady
-	 LDR R1,=0x0
-	 STR R1,[R0] ;clear semaphore
-	;start DMA transmitting
-	 ;--start transaction
-	 LDR R0, =DMA1_CCR7
-	 LDR R1, [R0] ;load current 
-	 LDR R2, =0xFFFFFFFE 
-	 AND R1, R2 ;disable channel
-	 STR R1, [R0] ;store
-	 LDR R0, =DMA1_CNDTR7
-	 LDR R1, =0x8
-	 STR R1, [R0]
-	 LDR R0,=DMA1_CCR7
-	 LDR R1, =0x1
-	 LDR R2,[R0]
-	 ORR R1,R2
-	 STR R1,[R0]
-	 	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
-	 LDR R0, =GPIOC_BSRR
-     LDR R1, =(1 << 29)
-	 STR R1,[R0]
-	 NOP
-	 NOP
-	 LDR R1, =(1 << 13)
-	 STR R1,[R0]
-    ;-T E S T ---LED-BLINK---END
 	 
 	B mylabel
 	ENDP
@@ -313,11 +261,68 @@ labUartPacketReady
  ;===exti port c=======
  
 spi1DmaRx  PROC
-	;clear all flags in DMA_CH3 
+
+	;--Is it half transfer interrupts?
+	LDR R0, =DMA1_ISR
+	LDR R1, [R0]
+	LDR R2, =(1<<6) ;HTIF2 flag
+	ANDS R2, R1 ;are there flag?
+	BEQ l_isr001_next_check
+	;half-transfer interrupts
+	   ;a)disable DMA channel
+	  LDR  R0, =DMA1_CCR7
+	  LDR R1, [R0]
+	  LDR R2, =0x1
+	  MVN R2,  R2
+	  AND R1,  R2
+	  STR R1, [R0]
+	  ;b)assign UART Tx DMA CH7 buffer address
+	  LDR R0, =uartTxBuffer  ;first half (bytes 0-15)
+	  LDR R1, =DMA1_CMAR7
+	  STR R0, [R1] ; store memory start point for  DMA Ch7
+	  ;c) amount of words in DMA1 Ch7 (UART Tx) transaction
+	  LDR R0, =DMA1_CNDTR7
+	  LDR R1, =0x10 ; 16 words in one trnsaction (1 word - 1 byte)
+	  STR R1, [R0]
+	  ;d)enable DMA channel
+	  LDR  R0, =DMA1_CCR7
+	  LDR R1, [R0]
+	  LDR R2, =0x1
+	  ORR R1,  R2
+	  STR R1, [R0]  ;  ->> transaction is starting here	  
+	  
+l_isr001_next_check
+    LDR R2, =(1<<5) ;TCIF2 flag
+	ANDS R2, R1 ;are there flag
+	BEQ l_isr001_fin
+	;full transfer interrupts
+	 ;a)disable DMA channel
+	  LDR  R0, =DMA1_CCR7
+	  LDR R1, [R0]
+	  LDR R2, =0x1
+	  MVN R2,  R2
+	  AND R1,  R2
+	  STR R1, [R0]
+	  ;b)assign UART Tx DMA CH7 buffer address
+	  LDR R0, =uartTxBuffer
+	  ADD R0, #0x16  ;second half (bytes 16-32)
+	  LDR R1, =DMA1_CMAR7
+	  STR R0, [R1] ; store memory start point for  DMA Ch7
+	  ;c) amount of words in DMA1 Ch7 (UART Tx) transaction
+	  LDR R0, =DMA1_CNDTR7
+	  LDR R1, =0x10 ; 16 words in one trnsaction (1 word - 1 byte)
+	  STR R1, [R0]
+	  ;d)enable DMA channel
+	  LDR  R0, =DMA1_CCR7
+	  LDR R1, [R0]
+	  LDR R2, =0x1
+	  ORR R1,  R2
+	  STR R1, [R0]  ;  ->> transaction is starting here	 
+l_isr001_fin
+	;clear all flags in DMA_CH2 
 	LDR R0, =DMA1_IFCR
 	LDR R1, =(1<<4) ; CGIF2
 	STR R1, [R0]
-	
 	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
 	 LDR R0, =GPIOC_BSRR
      LDR R1, =(1 << 29)
@@ -336,8 +341,7 @@ spi1Interrupt PROC
 	ADD R1, R1, #1
 	AND R1, R2
 	STR R1, [R0]
-	LDR R0, =SPI1_DR
-	;STR R1, [R0]
+
 	BX LR
 	ENDP
 ;--DMA1 Ch3 (SPI1) Interrupt service routine
@@ -346,7 +350,6 @@ spi1DmaTx PROC
 	LDR R0, =DMA1_IFCR
 	LDR R1, =(1<<8) ; CGIF3
 	STR R1, [R0]
-	
 	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
 	 LDR R0, =GPIOC_BSRR
      LDR R1, =(1 << 29)
@@ -363,54 +366,7 @@ gpioInterruptISR  PROC
     LDR R0, =EXTI_PR           ; Load EXTI Pending Register address
     LDR R1, =(1 << 14)         ; Prepare mask for EXTI Line 14
     STR R1, [R0]               ; Write to EXTI_PR to clear the pending flag
-	;---test on zero 'byteCounter' variable
-	LDR R0, =byteCounter  ;load counter
-	LDR R1, [R0]
-	SUB R1, R1, #1  ;decrement counter
-	STR R1, [R0] ;store  a counter
-	CMP R1, #0x0    ;R1 equals zero?
-	BEQ dmaByteBufferFull
-	;-wnen DMA buffer isn`t full (bytes of bitstream):
-		LDR R2, =GPIOB_IDR 
-		LDR R3, [R2]  ;read a word from GPIOB pins (b6-b13)
-		LSR R3, #6  ;shift right - because port bits are c6-c13
-		LDR R0, =bytePointer
-		LDR R1, [R0]
-		STRB R3, [R1] ;store a byte of bitstream by a pointer into array
-		ADD R1, R1, #1 ; increnet pointer
-		STR R1, [R0]  ;and store the one
-		BX LR  ;exit 
-dmaByteBufferFull	
-      ;--when DMA buffer is full:
-	  ;restore pointer
-	  LDR R0, =bytePointer
-	  LDR R1, =intermBuffer
-	  STR R1, [R0]
-	  ;restore counter
-	  LDR R0, =byteCounter
-	  LDR R1, =0x9
-	  STR R1, [R0]
-	  ;turn on the semaphore
-	  LDR R0, =semaphore
-	  LDR R1, =0x1
-	  STR R1, [R0]
-	    ;***test begin
-	  ;LDR R0, =intermBuffer
-	  ;LDR R1, =0x76543210
-	  ;STR R1, [R0]
-	  ;ADD R0, #0x4
-	  ;LDR R1, =0xFEDCBA98
-	  ;STR R1, [R0]
-	    ;***test end
-	  ;copy buffer
-	  LDR R0, =intermBuffer
-      LDR R2, =uartTxBuffer
-	  LDR R1, [R0]  ;first 4 bytes
-	  STR R1, [R2]
-	  ADD R0, #0x4  ;increment pointers
-	  ADD R2, #0x4
-	  LDR R1, [R0]  ;last 4 bytes
-	  STR R1, [R2]
+	
 	  BX LR
 	  ENDP
  
@@ -426,41 +382,6 @@ tim3UpdateISR   PROC
 	LDR R0, =TIM3_SR
     MOV R1,#0
 	STR R1, [R0] ; update the SR
-
-	;--delta-sigma---------adc---
-	;---[R5,R4] -bit stream buffer
-	;-R6 -bit counter, when 64bit reached-
-	;R4,R5 copying into RAM,and start DMA transmitting
-    ;through uart2
-     SUBS R6,#0x1
-	 BEQ ds_buffer_not_full
-	 ;test begin
-	  ;LDR R4, =0xf0f0f0f0
-	  ;LDR R5, =0xf0f0f0f0
-	 ;test end 
-	 ;store regs to RAM
-	 LDR R0, =uartTxBuffer
-	 STR R4, [R0] ;save LOW
-	 ADD R0, #0x4
-	 STR R5, [R0] ;save HIGH
-	 LDR R6, =0x41 ;restore counter
-	 LDR R0, =semaphore;
-	 MOV R1, #0x1
-	 STR R1,[R0]
-ds_buffer_not_full
-     LDR R0,=GPIOB_IDR ;read current bit
-	 LDR R1,[R0]
-	 LSL R1, #0x17
-	 MOV R0, #0x80000000
-	 ANDS R1, R0 ;input bit (GPIOB 8) in R1 now as bit31 
-	 ;i n f o  "AND(S)"-> ‘S’ is an optional suffix. If S is specified, the condition code flags are updated on the
-     ;  result of the operation (see Conditional execution on page 56).
-	 LSR R4, #0x1 ;shifting right LOW 32bits
-	 LSRS R5, #0x1 ;shifting  HIGH 32bits , and result carry flag
-	 BCC ds_no_bit_carry  ;has carry been happened?
-	  ORR R4, #0x80000000 ;set bit31 when carry
-ds_no_bit_carry
-     ORR R5, R1  ;apply input bit from the port 
 	BX LR ;reti
 	ENDP
 ;=====USART2==Interrupt Service Routine=

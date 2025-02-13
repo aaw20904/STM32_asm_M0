@@ -268,7 +268,9 @@ tim2OcCh2Setup     PROC
     AND R1,R1, R2
 	STR R1, [R0]  	
 	;C) width
-	LDR R1, [SP,#0x8]
+	LDR R1, [SP,#0x4]
+	LDR R2, =0x0000FFFF
+	AND R1, R2
 	LDR R0, =TIM2_CCR2
 	STR R1, [R0]
 	; set OC mode - toggle on match
@@ -525,7 +527,158 @@ u_rxtx_l2
 	BX LR
 	ENDP
 	LTORG
-;=======USART2_TRANSMITTER_DRIVEN_DMA==============
+;====Usart2DuplexDmaRxOnly========================	
+;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)]  
+;--par2@[-|-|-|Circular]
+;--par3@[pointerToDmaBuffer]   
+;--par4@[tx_int_en.DMA_int_en|priority_channel(8)|buffer_size(16)]
+;WordLength: WHEN 1 -> 1 Start bit, 9 Data bits, n Stop bit
+;            WHEN 0-> 0: 1 Start bit, 8 Data bits, n Stop bit
+;StopBits: 0b00-> 1 bit, b01-> 0.5 Stop bit, b10-> 2 Stop bits, b11-> 1.5 Stop bit,
+;DMA_int_en: 0x1 -> enable DMA interrupts, 0x0->interrupts disable
+;tx_int_en: 0x1->TC transmitter interrupt enable, 0x0->disable
+;***************************************************************
+;Priopity levels of IRQs has installed by default value.The programmer can re-define it
+;------------------------------------------------------------
+;NOTES: 1) After a full DMA transaction content of the DMA1_CNDTR7 reister reaches zero
+;It MUST be restored (disable channel->restore CNDTR->enable_channel(start)) before start the next DMA transaction
+;     2)To start DMA TX transaction - set bit 0 in DAM_CCR7 channel    
+  EXPORT Usart2DuplexDmaRxOnly
+Usart2DuplexDmaRxOnly PROC
+    ;---enable-clock-DMA1-(ch.7 , usart2_Rx)
+	 LDR R0, =RCC_AHBENR
+	 LDR R1, [R0]
+	 LDR R2, =0x00000001
+	 ORR R1, R2
+	 STR R1, [R0]
+	 ;enable interrupts for DMA1 CH6 in NVIC (IRQ position = 16, priority=3)
+	 ;one@[-|-|priority|IRQ_Number]
+	 LDR R0, =0x00000310
+	 PUSH {LR, R0}
+	 BL nvicEnableIRQ
+	 POP {LR}
+	 LDR R1, [SP,#0xc]
+	 ANDS R1, #0x10000000  ;are there TX  USART2 interrupts?
+	 BEQ lab_0002_no_tx_i
+	  ;enable USART2 global interrupt interrupts IRQ38, priority = 4
+	  LDR R0, =0x00000426
+	  PUSH {LR, R0}
+	  BL nvicEnableIRQ
+	  POP {LR}
+lab_0002_no_tx_i
+	 ;turn on  AHB to clock UART2
+	 LDR R0, =RCC_APB1ENR
+	 LDR R1, [R0]
+	 LDR R2, =(1<<17) ;enable clock USART2	 
+	 ORR R1, R1, R2
+	 STR R1, [R0]
+	 ;GPIO config 
+	 LDR R0, =GPIOA_CRL
+	 LDR R1, [R0]
+	 LDR R2, =0x00004B00
+	 ORR R2, R1
+	 STR R2, [R0]
+	 ;SET BaudRate for UART
+     EOR R0, R0, R0
+	 EOR R4,R4,R4
+	 LDR R1, [SP]
+	 ;extract b0-b15 (BitRate)
+	 LDR R2, =0x0000FFFF;
+	 AND R1,R1, R2
+	 LDR R0, =USART2_BRR
+	 ;store result to UART_BRR
+	 STR R1, [R0]
+	 ;--Data length
+	 LDR R1, [SP]
+	 LDR R2, =0x01000000;
+	 AND R1,R1,R2;
+	 LSR R1,R1, #12
+     MOV R4, R1
+	 ;--stop bits
+	 LDR R1, [SP]
+	 LDR R0, =0x00030000;
+	 AND R1,R1,R0
+	 LSR R1,R1,#0x4
+	 LDR R0, =USART2_CR2
+	 STR R1, [R0] ;store
+	  ;turn on USART2 Tx interrupt enable
+	 LDR R1, [SP,#0xc]
+	 ANDS R1, #0x10000000  ;are there interrupts?
+	 BEQ lab_0002_no_tx_i1
+	 ;--Interrupts ;TXE (bit7), TC (bit6) interrupt enable
+	 ;to correct run DMA engine
+	 ;NVIC interrupt for USART2 should be  off
+	 LDR R1, =(1<<6)    ;(1<<6)|(1<<7)  
+	 LDR R0, =USART2_CR1
+	 ORR R4,R4,R1 ;apply new
+     STR R4, [R0]
+lab_0002_no_tx_i1	 
+	 ;--enable DMA RX
+	 LDR R0, =USART2_CR3
+	 LDR R1, =(1<<6) ;bit7-DMAT , bit6-DMAR
+	 STR R1, [R0]  
+	 ;--NVIC stay off
+	 
+	 ;--enable UART, transmitter and  receiver 
+	 LDR R0, =USART2_CR1
+	 LDR R1, [R0]
+	 LDR R2, =(1<<13)|(1<<3)|(1<<2)  ;UE, TE
+	 ORR R1, R1, R2
+	 STR R1, [R0]
+	 ;*****************
+	 ;---D M A 1-C H 6---init---
+	 ;-1)Set the peripheral register address
+	 LDR R0, =DMA1_CPAR6
+	 LDR R1, =USART2_DR
+	 STR R1,[R0]
+	 ;--2)assign buffer address
+	 LDR R1, [SP,#0x08]
+	 LDR R0, =DMA1_CMAR6
+	 STR R1, [R0]
+	 ;--3) buffer size
+	 ;NOTE: after each USART event, this value be decremented
+	 ;and must be restored manually before next transaction
+	 LDR R1, [SP,#0xC]
+	 LDR R0, =0x0000FFFF
+	 AND R1, R0
+	 LDR R0,=DMA1_CNDTR6
+	 STR R1,[R0]
+	 ;--4)priority of channel
+	 LDR R1, [SP,#0xC]
+	 LDR R0,=0x00030000;
+	 AND R1,R0
+	 LSR R1, #0x4
+	 LDR R0, =DMA1_CCR6
+	 STR R1,[R0]
+	 ;--5)Configure data transfer direction(b4), circular mode(b5),
+	 ;peripheral & memory incremented 
+	 ;mode, peripheral & memory data size,
+	 LDR R4, [R0]
+	 LDR R1, =(1<<7) ;|(1<<4) ; memory increment, peripherial-to-mem
+	 ORR R4, R1
+	 ;;circular mode
+	 LDR R3, [SP,#0x4]
+	 AND R3, R3, #0x01
+	 LSL R3, #0x5
+	 ORR R4, R3
+	 ;transmission complete interrupt enable/disable
+	 LDR R1, [SP,#0xC]
+	 LDR R2,=0x0F000000;
+	 ANDS R1,R2
+	 BEQ u2_dma_no_tc1
+	 LDR R1, =(1<<1)|(2<<1) ;TCIE (b1), HTIE(b2)
+	 ORR R4, R1
+u2_dma_no_tc1
+     STR R4,[R0]  ; send to the DMA1_CCR6 reg
+	 ;free memory
+	 ADD SP,SP,#16
+	 ;POP {R0,R1}
+	 ;POP {R0,R1}	
+  BX LR
+  ENDP
+  LTORG
+;======
+;=======USART2_TRANSMITTER_DRIVEN_DMA========================
 ;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)]  
 ;--par2@[-|-|-|-]
 ;--par3@[pointerToDmaBuffer]   
@@ -804,7 +957,7 @@ spi1MasterTxOnlyIt PROC
 	LDR R1, [SP]
 	LDR R2, =(1<<8) ; bit8 - SSM
 	ANDS R1, R2
-	BEQ lbHardwareSS
+	BNE lbHardwareSS
 		;when software slave ON
 		;a) turn on SSM and SSI bits.  
 		LDR R0, =SPI1_CR1
@@ -957,7 +1110,7 @@ spi1SlaveRxOnlyIt PROC
 	LDR R1, [SP]
 	LDR R2, =(1<<8) ; bit8 - SSM
 	ANDS R1, R2
-	BEQ lbHardwareSS_3
+	BNE lbHardwareSS_3
 		;when software slave management
 		;GPIOA5,7 init  0x4
 		LDR R0, =GPIOA_CRL
@@ -1043,7 +1196,7 @@ spi1MasterFullDuplexIt PROC
 	LDR R2, =(1<<8) ; bit8 - SSM
 	ANDS R1, R2
 	STR R1, [R0]
-	BEQ lbHardwareSS_12
+	BNE lbHardwareSS_12
 		;when software slave ON
 		;a) turn on SSM and SSI bits.  
 		LDR R0, =SPI1_CR1
@@ -1198,7 +1351,7 @@ spi1MasterOnlyTransmitterDMAIt  PROC
 	LDR R1, [SP]
 	LDR  R2, =(1<<8) ; bit8 - SSM
 	ANDS R1, R2
-	BEQ lbHardwareSS_4
+	BNE lbHardwareSS_4
 		;when software slave ON
 		;a) turn on SSM and SSI bits.  
 		LDR R0, =SPI1_CR1
@@ -1402,13 +1555,20 @@ spi1SlaveOnlyReceiverDMAIt  PROC
 	LDR R2, =0x0000FFFF
 	AND R1, R2 ;extract b0-b16
 	STR R1, [R0] ; save
+	;d1)priority level 
+	LDR R0, =DMA1_CCR2
+	LDR R1, [R0]
+	LDR R2, =(1<<13)  ;high level 
+	ORR R1, R2
+	STR R1, [R0]
    ;e) Is there 8 bits or 16 bits?
 	LDR R1, [SP]
 	LDR R2, =0x10000000
 	ANDS R1, R2
+	LDR R0, =DMA1_CCR2
 	BEQ oneByteDataX1
 	  ;16 bit word 
-	  LDR R0, =DMA1_CCR2
+	
 	  LDR R1, [R0]
 	  LDR R2, =0x00000500 ;psize and msize = 2 bytes
 	  ORR R1, R2
@@ -1441,7 +1601,7 @@ oneByteDataX1
 	LDR R1, [SP]
 	LDR  R2, =(1<<8) ; bit8 - SSM
 	ANDS R1, R2
-	BEQ lbHardwareSS1_4
+	BNE lbHardwareSS1_4
 		;when software slave ON
 		;a) turn on SSM and SSI bits.  
 		LDR R0, =SPI1_CR1
@@ -1518,6 +1678,203 @@ L311
   ;10)Initializing DMA1_CH2 for Rx
    
    
+    ;free memory
+	ADD SP,SP,#0x12
+	BX LR
+	ENDP 
+	LTORG	
+	
+;======spiSlaveTransmitterWithDma==================
+  EXPORT spi1SlaveTransmitterWithDma
+spi1SlaveTransmitterWithDma  PROC 
+ ;NECCESSERY NOTE for PROGRAMMERS: to S T A R T  DMA transmission- 
+	;1)When run second time or later - Set DMA1_CNDTR3 amount of words in transaction
+	     ;(it cleared at the end of each transaction)
+		 ;When it runs for the first time - in shoul be setted later  
+	;2)Turn ON DMA1_CCR3 [bit 0]. Transaction is starting NOW.
+;***************************************************************************	
+;INFO: point "."  a separator of nibbles (4bit fields), '|' byte separator
+;parameter1 @ [frame_length.---|LSBFIRST|SSM|CPOL.CPHA]
+;----------------------------
+;bits:
+;(0-3) CPHA , (16-23) LSBFIRST
+;(4-7) CPOL , (24-27) Divider - not set in slave mode 
+;(8-15) SSM , (28-31) frame length  0x0 or 0x1 (8  or 16 bits)
+;---------------------------
+;parameter2 @ [addressOfBuffer]
+;---------------------------
+;parameter3 @ [-|circularMode8|wordsInBuffer16]
+;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
+;circularMode - enable circular mode
+;------------------------------
+     ;D-1)preparing: GPIOs  A5, A6
+    LDR R0, =GPIOA_CRL
+    LDR R2, =0x0B400000 ;PA6,  alternative push-pull, 50MHz, PA5-digital input
+    LDR R1, [R0] ;load curent CRL
+    ORR R1, R2 ;apply
+    STR R1, [R0] ;store CRL
+    ;D-2) DMA1 clock ON
+	;enable peripherial b) DMA1:
+	LDR R0, =RCC_AHBENR
+	LDR R2, =0x1 ; bit0 DMA1EN
+	LDR R1, [R0] ;load current 
+	ORR R1, R2 ;modify
+	STR R1, [R0] ;update AHBENR
+	;D-3)Set DMA Priority and Enable IRQ 
+		;D-3) enable    DMA interrupts (IRQ13)
+	  ;-when an inner procedure has been calling - save LR in the stack before
+	  ;and restore it after inner procedure
+	  PUSH {LR}
+	   ;one@[-|-|priority|IRQ_Number]
+	  LDR R0, =0x0000000D
+	  PUSH {R0} ;store LR for inner call
+	  BL nvicEnableIRQ
+	  POP {LR} ;restore LR
+    ;8,1) Enable SPI Clock
+	LDR R0, =RCC_APB2ENR
+	LDR R2, [R0] ;load current CR1 value
+	LDR R1, =(1<<12) ;bit 12 -enable SPI1  
+	ORR R2, R1 ;apply changes
+	STR R2, [R0] ;strore updated data
+	;1A)Clear registers
+	LDR R0, =SPI1_CR1
+	LDR R1, =0x0
+	STR R1, [R0]
+	LDR R0, =SPI1_CR2
+	STR R1, [R0]
+	;2)Is there software select management?
+	LDR R1, [SP]
+	LDR  R2, =(1<<8) ; bit8 - SSM
+	ANDS R1, R2
+	BNE lbHardwareSS_4_x1
+		;when software slave ON
+		;a) turn on SSM and SSI bits.  
+		LDR R0, =SPI1_CR1
+		LDR R1, [R0] ;load current
+		LDR R2, =(1<<9) ;SSM->bit9, SSI->bit8
+		ORR R1, R2 ;update
+		STR R1, [R0] ;store
+		B L31_x1
+lbHardwareSS_4_x1
+    ;when software slave mgm OFF - hardware management
+	;a)enable pin GPIOA4 (NSS pin)
+	LDR R0, =GPIOA_CRL
+	LDR R1, [R0] ; load current value
+	LDR R2, =0x000B0000  ;A4 push-pull alternative, 50Mz
+	ORR R2, R1
+	STR R2, [R0]
+	;b)enable SS output
+	LDR R0, =SPI1_CR2
+	LDR R1, [R0]
+	LDR R2, =(1<<2) ;SSOE bit 2
+	ORR R1, R2  ;apply new value 
+	STR R1, [R0] ;  store
+L31_x1
+   ;3)Set up divider
+    ;LDR R0, =SPI1_CR1 
+    ;LDR R1, [SP]
+	;LDR R2, =0x07000000 ; mask for divider parameter 
+    ;AND R1, R2 ;extract divider
+	;LSR R1, R1, #21  ;shift in b3-b5 (as in SPI_CR1)
+	;LDR R2, [R0] ;load current CR1
+	;ORR R1, R2 
+	;STR R1, [R0]  ;udate CR1
+  ;4)SetUp phase and polarity
+    LDR R0, =SPI1_CR1 
+    LDR R1, [SP]
+    LDR R2, =0x00000011
+    AND R2, R1
+    MOV R3, R2 ;copy 
+    LSR R2, R2, #3 ;shift CPOL in according to the CR1
+	AND R3, #1
+    ORR R2, R3  ; apply CPHA bit
+    LDR R1, [R0] ;load current
+    ORR R1, R2 ;apply new
+    STR R1, [R0] ;store
+  ;5)Frmae length (DFF  bit11)
+    LDR R0, =SPI1_CR1
+    LDR R1, [SP]
+    LDR R2, =0x10000000
+    AND R1, R2 ;filter DFF
+    LSR R1, R1, #17 ;shit the bit to b11 as in CR1
+    LDR R2, [R0] ;load CR1
+    ORR R1, R2 ;apply new
+    STR R1, [R0] ;store changes
+ ;6)LSB/MSBIFRST
+    LDR R1, [SP]
+    LDR R2, =0x00010000
+    AND R1, R2 ;extract LSBFIRST bit
+    LSR R1, R1, #9 ;sift to bit7 
+    LDR R2, [R0] ;load current
+    ORR R1, R2 ;apply
+    STR R1, [R0] ;save CR1
+ ;7) Tx Only mode
+   ;BIDIMODE b15=1 (bidirectional MOSI line)
+   ;BIDIOE b14=1 (transmitter only mode)
+   ;RXONLY b10=0 
+    LDR R1, =(1<<15)|(1<<14)
+    LDR R2, [R0] ;load current CR1
+    ORR R1, R2 ;apply new data
+    STR R1, [R0] ;save
+  ;8)Enable DMA channel processing on Tx
+    LDR R0, =SPI1_CR2
+	LDR R1, [R0]
+	LDR R2, =(1<<1)
+	ORR R1, R2
+	STR R1, [R0]
+
+  ;9)Master mode (b2=1) and enable SPI (b6=1)
+    LDR R0, =SPI1_CR1
+    LDR R2, =(1<<6)   ; SLAVE mode
+    LDR R1, [R0] ;load current CR1
+    ORR R1, R2 ;apply new
+    STR R1, [R0] ;save CR1    
+  ;10)Initializing DMA1_CH3 for Tx
+   ;a)disable DMA1 channel 3 (clear register)
+    LDR R0, =DMA1_CCR3
+	LDR R2, =0x00000000
+	STR R2, [R0]
+   ;b) peripherial address
+	LDR R0, =DMA1_CPAR3
+	LDR R1, =SPI1_DR
+	STR R1, [R0]
+   ;c)memory address
+	LDR R0, =DMA1_CMAR3
+	LDR R1, [SP,#4]
+	STR R1, [R0]
+   ;d)number_of_words_to_transmitt
+	LDR R0, =DMA1_CNDTR3
+	LDR R1, [SP,#8]
+	LDR R2, =0x0000FFFF
+	AND R1, R2 ;extract b0-b16
+	STR R1, [R0] ; save
+   ;e) Is there 8 bits or 16 bits?
+	LDR R1, [SP]
+	LDR R2, =0x10000000
+	ANDS R1, R2
+	 LDR R0, =DMA1_CCR3
+	BEQ oneByteDataX_x1
+	  ;16 bit word 
+	  LDR R1, [R0]
+	  LDR R2, =0x00000500 ;psize and msize = 2 bytes
+	  ORR R1, R2
+	  STR R1, [R0]	
+oneByteDataX_x1
+       ;8 bit word - default value (b11-b8), so do nothing
+   ;f)memory increment b7, memory-to-peripherial b4
+	LDR R1, [R0]
+    LDR R2, =(1<<7)|(1<<4)
+    ORR R1,R2
+   ;g)interrupt on half (b2) and full (b1) transfer complete 
+    LDR R2, =(1<<1)|(1<<2) 
+	ORR R1, R2
+   ;h)Circular mode 
+    LDR R2, [SP, #8]
+	LDR R3, =0x00010000  ;extract bit mask
+	AND R2, R3 
+	LSR R2, #11 ;move to b5 in acc to CCR
+	ORR R1, R2 ;update
+	STR R1, [R0] ;save
     ;free memory
 	ADD SP,SP,#0x12
 	BX LR

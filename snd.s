@@ -83,8 +83,9 @@ semaphore         SPACE 4
 byteCounter       SPACE 4
 bytePointer       SPACE 4
 int32TestVar1     SPACE 4
-debugBuffer       SPACE 64
-uartTxBuffer      SPACE 32
+debugBuffer       SPACE 128 ;@0x20000058
+uartTxBuffer      SPACE 4098    
+
 
    AREA MainCode, CODE, READONLY
 	  ; |.text|
@@ -93,6 +94,16 @@ uartTxBuffer      SPACE 32
    
 Start         PROC
 
+      ;---debug buffer for test data corruption
+	  LDR R0, =uartTxBuffer
+	  LDR R1, =0x00
+lDbg01      
+		STRB R1, [R0]
+		ADD R1, #0x01
+		ADD R0, #0x1
+		TEQ R1, #0x100
+		BNE lDbg01	  
+	  ;--debug buffer init end
 	  LDR R1, =0x00000000
 	  LDR R0, =semaphore
 	  STR R1, [R0]
@@ -106,10 +117,7 @@ Start         PROC
 	  LDR R1, =intermBuffer
       LDR R0, =bytePointer
       STR R1, [R0]	;initialize pointer  
-	 
 	  BL gpio_init     ; Call the gpio_init procedure from the other file
-
-
 	  LDR R0, =GPIOA_CRH
 	  LDR R1, =0x0000000B
 	  STR R1,[R0]
@@ -119,7 +127,7 @@ Start         PROC
 	  STR R1, [R0]
 	  ;PORT B h
 	  LDR R0, =GPIOB_CRH
-	  LDR R1, =0x34444444  ;C15 - output
+	  LDR R1, =0x43344444  ;B13,B14 - output
 	  STR R1,[R0]
 	  ;PORTB low
 	  LDR R0, =GPIOB_CRL
@@ -170,7 +178,85 @@ Start         PROC
 	  LDR R1, =GPIOC_ODR
 	  STR R0,[R1]
    
- 
+     ; B lb00188
+  ;-->>>>>-DAC-init--BEGIN----
+   ;====Usart2DuplexDmaRxOnly================TST=BEGIN========	
+;--par1@[WordLength(8)|stopBits(8)|bauds_divider(16)]  
+;--par2@[-|-|-|Circular]
+;--par3@[pointerToDmaBuffer]   
+;--par4@[tx_interrupt_en.DMA_rx_interrupt_en|priority_channel(8)|buffer_size(16)]
+;WordLength: WHEN 1 -> 1 Start bit, 9 Data bits, n Stop bit
+;            WHEN 0-> 0: 1 Start bit, 8 Data bits, n Stop bit
+;StopBits: 0b00-> 1 bit, b01-> 0.5 Stop bit, b10-> 2 Stop bits, b11-> 1.5 Stop bit,
+;DMA_rx_int_en: 0x1 -> enable DMA interrupts, 0x0->interrupts disable
+;tx_int_en: 0x1->TC transmitter interrupt enable, 0x0->disable
+;***************************************************************
+;NOTES: 1) After a full DMA transaction content of the DMA1_CNDTR7 reister reaches zero
+;It MUST be restored (disable channel->restore CNDTR->enable_channel(start)) before start the next DMA transaction
+;     2)To start DMA TX transaction - set bit 0 in DAM_CCR7 channel 
+   LDR R0, =0x00000035 ;576 KBaud
+   LDR R1, =0x00000000 ;usual mode
+   LDR R2, =uartTxBuffer
+   LDR R3, =0x00020800 ;  2048 bytes (half)
+   PUSH {R0, R1, R2, R3};
+   BL Usart2DuplexDmaRxOnly
+   LDR R0, =DMA1_CCR6
+   LDR R1, [R0]
+   ORR R1, #0x1
+   STR R1, [R0]
+;lb00188
+;----spiSlaveTransmitterWithDma   
+;NECCESSERY NOTE for PROGRAMMERS: to S T A R T  DMA transmission- 
+	;1)When run second time or later - Set DMA1_CNDTR3 amount of words in transaction
+	     ;(it cleared at the end of each transaction)
+		 ;When it runs for the first time - in shoul be setted later  
+	;2)Turn ON DMA1_CCR3 [bit 0]. Transaction is starting NOW.
+;***************************************************************************	
+;INFO: point "."  a separator of nibbles (4bit fields), '|' byte separator
+;parameter1 @ [frame_length.---|LSBFIRST|SSM|CPOL.CPHA]
+;----------------------------
+;bits:
+;(0-3) CPHA , (16-23) LSBFIRST
+;(4-7) CPOL , (24-27) Divider - not set in slave mode 
+;(8-15) SSM , (28-31) frame length
+;---------------------------
+;parameter2 @ [addressOfBuffer]
+;---------------------------
+;parameter3 @ [-|circularMode8|wordsInBuffer16]
+;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
+;circularMode - enable circular mode
+;------------------------------
+    LDR R0, =0x00010010
+	LDR R1, =uartTxBuffer
+	LDR R2, =0x00011000  ;4096-full buffer
+	PUSH {R0, R1, R2}
+	BL spi1SlaveTransmitterWithDma 
+	LDR R0, =DMA1_CCR3
+    LDR R1, [R0]
+	LDR R2, =0x1
+	ORR R1, R2
+	STR R1, [R0]
+;====FUNCTION initialize TIM2 CH2 Output Compare
+;    A@[b31 presc| period b0],
+;Width@[b31 null |  width b0]
+;example bassing params PUSH {A,Width}
+	LDR R1, =0x00000027 ;384kHz
+	LDR R2, =0x18; //align edges
+	PUSH {R1,R2}
+	BL tim2OcCh2Setup	
+	
+
+l_0005_x
+  B l_0005_x
+  ;--<<<<<<-DEBUG--1--END----
+  ;--DAC init end-----
+  
+  
+  
+  ;---DeltaSigma-ADC--mode----begin
+  
+  
+ ;---SPI--------------
 ;--To start : 2)Clear SSI (bit8) SPI1_CR1
 ;             1)Enable DMA1 channel 2 (Bit0) DMA1_CCR2
 ;             3)When mode NOT circular - update DMA1_CNDTR2 register after end of DMA transaction 
@@ -181,7 +267,7 @@ Start         PROC
 ;bits:
 ;(0-3) CPHA , (16-23) LSBFIRST
 ;(4-7) CPOL , (24-27) - 
-;(8-15) SSM , (28-31) frame length
+;(8-15) SSM , (28-31) frame length (8[0] or 16 [1] bits)
 ;---------------------------
 ;parameter2 @ [addressOfBuffer]
 ;---------------------------
@@ -189,9 +275,9 @@ Start         PROC
 ;wordsInBuffer - amount of 8bit or 16bit transactions to transmitt
 ;circularMode - enable circular mode
 ;------------------------------
-    LDR R0, =0x17010110
-	LDR R1, =debugBuffer
-	LDR R2, =0x00010008
+    LDR R0, =0x00010110
+	LDR R1, =uartTxBuffer
+	LDR R2, =0x00011000 ;1024words(1024bytes) per transaction
 	PUSH {R0, R1, R2}
 	BL   spi1SlaveOnlyReceiverDMAIt 
     ;tusn on SPI DMA
@@ -214,8 +300,10 @@ Start         PROC
 	LDR R2, =0x1
 	ORR R1, R2
 	STR R1, [R0]
-	
- 
+    NOP
+	NOP
+	NOP
+	NOP
 	  ;----SPI END
 
 ;=======USART2_TRANSMITTER_DRIVEN_DMA==============
@@ -231,12 +319,12 @@ Start         PROC
 ;NOTES: 1) After a full DMA transaction content of the DMA1_CNDTR7 reister reaches zero
 ;It MUST be restored before start the next DMA transaction
 ;     2)To start DMA TX transaction - set bit 0 in DAM_CCR7 channel    
-  LDR R0, =0x00000035 ;576 KBaud
-  LDR R1, =0x00000000;
+   LDR R0, =0x00000035 ;576 KBaud
+   LDR R1, =0x00000000;
    LDR R2, =uartTxBuffer ;buffer address
-   LDR R3, =0x000000016 ;16bytes TX ROM buffer
-  PUSH {R0,R1,R2,R3}
-  BL uart_init_tx_dma
+   LDR R3, =0x000000800 ;512 bytes TX ROM buffer
+   PUSH {R0,R1,R2,R3}
+   BL uart_init_tx_dma
   
 	;====FUNCTION initialize TIM2 CH2 Output Compare
 	;    A@[b31 presc| period b0],
@@ -261,7 +349,19 @@ mylabel
  ;===exti port c=======
  
 spi1DmaRx  PROC
-
+    ;;--test for SPI errors
+	LDR R0, =SPI1_SR
+	LDR R1, [R0]
+	TST R1, #(1<<3)|(1<<5)
+	BEQ l_spi1DmaRx_01  ;jump when it isn`t any SPI error
+    LDR R0, =GPIOB_BSRR
+    LDR R1, =(1<<14)  ;set
+    STR R1, [R0]
+	B l_spi1DmaRx_02 
+l_spi1DmaRx_01
+    LDR R1, =(1<<30)  ;clear
+	STR R1, [R0]
+l_spi1DmaRx_02
 	;--Is it half transfer interrupts?
 	LDR R0, =DMA1_ISR
 	LDR R1, [R0]
@@ -269,7 +369,7 @@ spi1DmaRx  PROC
 	ANDS R2, R1 ;are there flag?
 	BEQ l_isr001_next_check
 	;half-transfer interrupts
-	   ;a)disable DMA channel
+	   ;a)disable DMA channel (UART Tx)
 	  LDR  R0, =DMA1_CCR7
 	  LDR R1, [R0]
 	  LDR R2, =0x1
@@ -277,12 +377,12 @@ spi1DmaRx  PROC
 	  AND R1,  R2
 	  STR R1, [R0]
 	  ;b)assign UART Tx DMA CH7 buffer address
-	  LDR R0, =uartTxBuffer  ;first half (bytes 0-15)
+	  LDR R0, =uartTxBuffer  ;first half (bytes 0-511)
 	  LDR R1, =DMA1_CMAR7
 	  STR R0, [R1] ; store memory start point for  DMA Ch7
 	  ;c) amount of words in DMA1 Ch7 (UART Tx) transaction
 	  LDR R0, =DMA1_CNDTR7
-	  LDR R1, =0x10 ; 16 words in one trnsaction (1 word - 1 byte)
+	  LDR R1, =0x800 ; 512words in one trnsaction (1 word - 1 byte)
 	  STR R1, [R0]
 	  ;d)enable DMA channel
 	  LDR  R0, =DMA1_CCR7
@@ -290,12 +390,16 @@ spi1DmaRx  PROC
 	  LDR R2, =0x1
 	  ORR R1,  R2
 	  STR R1, [R0]  ;  ->> transaction is starting here	  
-	  
+	   ;--turn LED ON
+	  LDR R0, =GPIOC_BSRR
+	  LDR R1, =(1 << 13)
+	  STR R1,[R0]
 l_isr001_next_check
     LDR R2, =(1<<5) ;TCIF2 flag
 	ANDS R2, R1 ;are there flag
 	BEQ l_isr001_fin
 	;full transfer interrupts
+	  
 	 ;a)disable DMA channel
 	  LDR  R0, =DMA1_CCR7
 	  LDR R1, [R0]
@@ -305,12 +409,12 @@ l_isr001_next_check
 	  STR R1, [R0]
 	  ;b)assign UART Tx DMA CH7 buffer address
 	  LDR R0, =uartTxBuffer
-	  ADD R0, #0x16  ;second half (bytes 16-32)
+	  ADD R0, #0x800  ;second half (bytes 512-1023)
 	  LDR R1, =DMA1_CMAR7
 	  STR R0, [R1] ; store memory start point for  DMA Ch7
 	  ;c) amount of words in DMA1 Ch7 (UART Tx) transaction
 	  LDR R0, =DMA1_CNDTR7
-	  LDR R1, =0x10 ; 16 words in one trnsaction (1 word - 1 byte)
+	  LDR R1, =0x800 ; 8 words in one trnsaction (1 word - 1 byte)
 	  STR R1, [R0]
 	  ;d)enable DMA channel
 	  LDR  R0, =DMA1_CCR7
@@ -318,19 +422,16 @@ l_isr001_next_check
 	  LDR R2, =0x1
 	  ORR R1,  R2
 	  STR R1, [R0]  ;  ->> transaction is starting here	 
+	  ;--LED OFF
+	  LDR R0, =GPIOC_BSRR
+      LDR R1, =(1 << 29)
+	  STR R1,[R0]
+
 l_isr001_fin
 	;clear all flags in DMA_CH2 
 	LDR R0, =DMA1_IFCR
 	LDR R1, =(1<<4) ; CGIF2
-	STR R1, [R0]
-	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
-	 LDR R0, =GPIOC_BSRR
-     LDR R1, =(1 << 29)
-	 STR R1,[R0]
-	 NOP
-	 NOP
-	 LDR R1, =(1 << 13)
-	 STR R1,[R0]	
+	STR R1, [R0]	
 	BX LR
 	ENDP
  
@@ -346,19 +447,78 @@ spi1Interrupt PROC
 	ENDP
 ;--DMA1 Ch3 (SPI1) Interrupt service routine
 spi1DmaTx PROC
+	;is there half or full transfer?
+	LDR R0, =DMA1_ISR
+	LDR R1, [R0]
+	ANDS R1, #(1<<10)  ;HTIF3
+	BEQ spi1DmaTx_full_transfer
+		;half transfer
+		;so, copy first half - from uart2 DMA ch6
+		;disable DAM1_CH6
+		LDR R0, =DMA1_CCR6
+		LDR R1, [R0] ;read content
+		ORR R1, 0x1 ;set 1  to correct working when EN hasn`t been set
+		EOR R1, #0x1 ;clear flag
+		STR R1, [R0]  ;store to CCR6
+		;set address of entry point for DMA Ch6
+		LDR R1, =uartTxBuffer
+		LDR R0, =DMA1_CMAR6
+		STR R1, [R0] ;memory addres for UART Tx DMA transaction
+		;transaction length
+		LDR R0, =DMA1_CNDTR6
+		LDR R1, =0x800 ;2048bytes
+		STR r1, [R0]
+		;enable DMA channnel
+		LDR R0, =DMA1_CCR6
+		LDR R1, [R0] ;read content
+		ORR R1, 0x1 ;set 1 
+		STR R1, [R0]  ;store to CCR6
+		;send byte to host through UART2
+		LDR R0, =USART2_DR
+		LDR R1, =0x10
+		STR R1, [R0]
+		;LED
+		 LDR R0, =GPIOC_BSRR
+		 LDR R1, =(1 << 13)
+		 STR R1,[R0]
+		B spi1DmaTx_fin_part
+spi1DmaTx_full_transfer
+     ;when full transfer -copying the second part
+	 ;disable DAM1_CH6
+	LDR R0, =DMA1_CCR6
+	LDR R1, [R0] ;read content
+	ORR R1, 0x1 ;set 1  to correct working when EN hasn`t been set
+	EOR R1, #0x1 ;clear flag
+	STR R1, [R0]  ;store to CCR6
+	;set address of entry point for DMA Ch6
+	LDR R1, =uartTxBuffer
+	;working with second half
+	ADD R1, #0x800
+	LDR R0, =DMA1_CMAR6
+	STR R1, [R0] ;memory addres for UART Tx DMA transaction
+	;transaction length
+	LDR R0, =DMA1_CNDTR6
+	LDR R1, =0x800 ;2048bytes
+	STR r1, [R0]
+	;enable DMA channnel
+	LDR R0, =DMA1_CCR6
+	LDR R1, [R0] ;read content
+	ORR R1, 0x1 ;set 1 
+	STR R1, [R0]  ;store to CCR6
+	;send byte to host through UART2
+	LDR R0, =USART2_DR
+	LDR R1, =0x20
+	STR R1, [R0]
+	;LED  
+	  LDR R0, =GPIOC_BSRR
+     LDR R1, =(1 << 29)
+	 STR R1,[R0]
+spi1DmaTx_fin_part
 	;clear all flags in DMA_CH3 
 	LDR R0, =DMA1_IFCR
 	LDR R1, =(1<<8) ; CGIF3
 	STR R1, [R0]
-	;---T E S T----LED--BLINK--BEGIN (GPIOC 13)
-	 LDR R0, =GPIOC_BSRR
-     LDR R1, =(1 << 29)
-	 STR R1,[R0]
-	 NOP
-	 NOP
-	 LDR R1, =(1 << 13)
-	 STR R1,[R0]
-    ;-T E S T ---LED-BLINK---END
+ 
 	BX LR
     ENDP    
 ; external interrupts 
@@ -386,6 +546,11 @@ tim3UpdateISR   PROC
 	ENDP
 ;=====USART2==Interrupt Service Routine=
 usart2ISR  PROC
+	LDR R0, =USART2_SR
+	LDR R1, [R0]
+	MVN R2, #(1<<6)
+	AND R1, R2
+	STR R1, [R0]
 	BX LR
 	  ENDP
 ;==========DMA1 CH7 (UART2 TX)
@@ -398,7 +563,29 @@ DMA1_CH7_ISR PROC
      ENDP
 ;====DMA1 Ch6 (USART2 RX)
 DMA1_CH6_ISR PROC
-	;clear flag 
+	;--Is it half transfer interrupts?
+	LDR R0, =DMA1_ISR
+	LDR R1, [R0]
+	LDR R2, =(1<<22) ;HTIF6 flag
+	ANDS R2, R1 ;are there flag?
+	BEQ l_isr001_to_full_tr
+	  ;--echo
+	  LDR R0, =USART2_DR
+	  LDR R1, =debugBuffer
+	  LDR R2, [R1]
+	  STR R2, [R0]
+	  ;--LED ON
+	  LDR R0, =GPIOC_BSRR
+	  LDR R1, =(1 << 13)
+	  STR R1,[R0]
+	  B l_end_001
+l_isr001_to_full_tr
+	 LDR R0, =GPIOC_BSRR
+     LDR R1, =(1 << 29)
+	 STR R1,[R0]
+
+l_end_001
+	;clear interupt flag 
   ;clear
 	LDR R0,=DMA1_IFCR
 	LDR R1,=(1<<20)
@@ -409,21 +596,21 @@ DMA1_CH6_ISR PROC
 ;======hard fault ISR
 TRASH_ISR PROC
 	LDR R0, =GPIOB_BSRR
-	LDR R1, =(1<<15) ;turn on led
+	LDR R1, =(1<<13) ;turn on led
 	STR R1, [R0]
 	B .
 	ENDP
 		
 TRASH_ISR_BUS PROC
 	LDR R0, =GPIOB_BSRR
-	LDR R1, =(1<<15) ;turn on led
+	LDR R1, =(1<<13) ;turn on led
 	STR R1, [R0]
 	B .
 	ENDP
 
 TRASH_ISR_MPU PROC
 	LDR R0, =GPIOB_BSRR
-	LDR R1, =(1<<15) ;turn on led
+	LDR R1, =(1<<13) ;turn on led
 	STR R1, [R0]
 	B .
 	ENDP
